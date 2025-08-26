@@ -76,6 +76,21 @@ const PERIOD = {
   mars:  686.98
 };
 
+// ===== Parking orbit + transfer config =====
+const ORBIT = {
+  rPark: 3.0,           // parking orbit radius from Earth's center (Earth radius is 2)
+  segments: 96,         // smoothness for circle/arc drawing
+  ascentSegments: 24,   // ascent polyline resolution
+  orbitColor: 0xffffff, // wait arc color
+  ascentColor: 0x00ff88 // ascent line color
+};
+
+const TRANSFER = {
+  color: 0x66ccff,
+  dashSize: 0.6,
+  gapSize: 0.4
+};
+
 // compute angular rates (rad / real-second) from periods + time scale
 function currentAngularRates() {
   const s = TIME.daysPerSecond * TIME.multiplier; // sim-days per real-second
@@ -225,6 +240,191 @@ function ensureTransferPrimitives() {
     waitLine = new THREE.Line(waitGeom, waitMat);
     scene.add(waitLine);
   }
+}
+
+// ===== Lines/geometry for ascent, parking-arc, transfer-arc =====
+let ascentLine, ascentGeom;
+let waitArcLine, waitArcGeom;
+let transferLine, transferGeom2, arrivalMarker2;
+
+function ensureTrajectoryPrimitives() {
+  if (!ascentLine) {
+    ascentGeom = new THREE.BufferGeometry();
+    ascentGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array((ORBIT.ascentSegments+1)*3), 3));
+    const mat = new THREE.LineBasicMaterial({ color: ORBIT.ascentColor, transparent:true, opacity:0.8 });
+    ascentLine = new THREE.Line(ascentGeom, mat);
+    scene.add(ascentLine);
+  }
+  if (!waitArcLine) {
+    waitArcGeom = new THREE.BufferGeometry();
+    waitArcGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array((ORBIT.segments+1)*3), 3));
+    const mat = new THREE.LineBasicMaterial({ color: ORBIT.orbitColor, transparent:true, opacity:0.45 });
+    waitArcLine = new THREE.Line(waitArcGeom, mat);
+    scene.add(waitArcLine);
+  }
+  if (!transferLine) {
+    transferGeom2 = new THREE.BufferGeometry();
+    transferGeom2.setAttribute('position', new THREE.BufferAttribute(new Float32Array((128+1)*3), 3));
+    const mat = new THREE.LineDashedMaterial({
+      color: TRANSFER.color, dashSize: TRANSFER.dashSize, gapSize: TRANSFER.gapSize,
+      transparent: true, opacity: 0.95
+    });
+    transferLine = new THREE.Line(transferGeom2, mat);
+    transferLine.computeLineDistances();
+    scene.add(transferLine);
+
+    arrivalMarker2 = new THREE.Mesh(
+      new THREE.SphereGeometry(0.25, 16, 16),
+      new THREE.MeshBasicMaterial({ color: TRANSFER.color })
+    );
+    scene.add(arrivalMarker2);
+  }
+}
+
+// Parking orbit + transfer solver called every frame
+function updateParkingOrbitAndTransfer() {
+  ensureTrajectoryPrimitives();
+
+  // Earth/Moon state now
+  const earthW = worldPosOf(earth);
+  const w      = currentAngularRates();
+  const n_spinE = (TAU / SIDEREAL_DAY) * (TIME.daysPerSecond * TIME.multiplier);
+
+  // Earth site angle NOW (inertial, about +Y)
+  const thetaE_now = Math.atan2(
+    (earthSiteLocal.clone().applyAxisAngle(new THREE.Vector3(0,1,0), earth.rotation.y)).z,
+    (earthSiteLocal.clone().applyAxisAngle(new THREE.Vector3(0,1,0), earth.rotation.y)).x
+  );
+
+  // Moon site vector NOW from Earth's center, and its angle
+  const moonOrbitLocal = moon.position.clone(); // ~ (4,0,0)
+  const moonSiteNowEC  = new THREE.Vector3().copy(moonOrbitLocal).add(moonSiteLocal)
+                           .applyAxisAngle(new THREE.Vector3(0,1,0), moonPivot.rotation.y);
+  const thetaM_now = Math.atan2(moonSiteNowEC.z, moonSiteNowEC.x);
+
+  // Choose Earth-centered mu so the Moon's mean motion matches the sim
+  const rMoonCenter = moon.position.length();
+  const n_moon = w.moon;
+  const mu = (n_moon*n_moon) * (rMoonCenter**3);
+
+  // Parking orbit mean motion
+  const r1 = ORBIT.rPark;
+  const n_park = Math.sqrt(mu / (r1*r1*r1));
+
+  // Ascent duration (sim) — short but non-zero; tweak to taste
+  const ascentDays = 0.02; // ~29 min of sim-time
+  const t_ascent   = ascentDays / (TIME.daysPerSecond); // real seconds
+
+  // First guess: r2 using "now"
+  let r2_guess = moonSiteNowEC.length();
+  function hohmannTOF(r1, r2){ const a=0.5*(r1+r2); return Math.PI*Math.sqrt((a*a*a)/mu); }
+  let tof = hohmannTOF(r1, r2_guess); // real seconds
+
+  // Iterate a few times to settle on consistent wait and TOF
+  let wait = 0;
+  for (let iter=0; iter<3; iter++) {
+    // Predict arrival angle with current guess
+    const thetaM_arr = thetaM_now + n_moon * (t_ascent + wait + tof);
+
+    // Burn direction must be opposite arrival direction (peri→apo)
+    const uDir = new THREE.Vector3(Math.cos(thetaM_arr+Math.PI), 0, Math.sin(thetaM_arr+Math.PI)); // unit in XZ
+    // Parking plane basis {u,v} (XZ plane since everything orbits in XZ)
+    const u = uDir.clone(); // periapsis direction (burn)
+    const v = new THREE.Vector3(0,1,0).cross(u).normalize(); // points 90° ahead in plane
+
+    // Earth site angle at orbital insertion (after ascent)
+    const thetaE_entry = thetaE_now + n_spinE * t_ascent;
+
+    // Express entry direction in the parking plane basis
+    const entryDir = new THREE.Vector3(Math.cos(thetaE_entry), 0, Math.sin(thetaE_entry)); // XZ
+    const entryAng = Math.atan2(entryDir.dot(v), entryDir.dot(u)); // angle on the orbit
+
+    // We need to rotate from entryAng → 0 (burn at +u). Positive (ccw) arc length:
+    const dPhi = wrap2Pi(0 - entryAng);
+    wait = dPhi / n_park; // real seconds
+
+    // With this wait, recompute arrival vector and TOF using actual r2 at arrival
+    const thetaM_arr2 = thetaM_now + n_moon * (t_ascent + wait + tof);
+    const r2VecArr    = new THREE.Vector3().copy(moonOrbitLocal).add(moonSiteLocal)
+                           .applyAxisAngle(new THREE.Vector3(0,1,0), thetaM_arr2);
+    const r2          = r2VecArr.length();
+    tof = hohmannTOF(r1, r2);
+  }
+
+  // Final burn & arrival geometry
+  const thetaM_arr_final = thetaM_now + n_moon * (t_ascent + wait + tof);
+  const u = new THREE.Vector3(Math.cos(thetaM_arr_final+Math.PI), 0, Math.sin(thetaM_arr_final+Math.PI));
+  const v = new THREE.Vector3(0,1,0).cross(u).normalize();
+
+  // --- 1) Transfer ellipse (peri along +u, apo at -u with r2 at arrival) ---
+  const r2VecArr = new THREE.Vector3().copy(moonOrbitLocal).add(moonSiteLocal)
+                     .applyAxisAngle(new THREE.Vector3(0,1,0), thetaM_arr_final);
+  const r2 = r2VecArr.length();
+  const a = 0.5*(r1 + r2);
+  const e = (r2 - r1)/(r2 + r1);
+
+  {
+    const pos = transferGeom2.getAttribute('position');
+    const N = 128;
+    for (let i=0;i<=N;i++){
+      const nu = (i/N)*Math.PI; // 0..π
+      const r  = (a*(1-e*e)) / (1 + e*Math.cos(nu));
+      const dir = u.clone().multiplyScalar(Math.cos(nu)).add(v.clone().multiplyScalar(Math.sin(nu)));
+      const p = earthW.clone().add(dir.multiplyScalar(r));
+      pos.setXYZ(i, p.x, p.y, p.z);
+    }
+    // Pin endpoints
+    const pBurn   = earthW.clone().add(u.clone().multiplyScalar(r1));
+    const pArrive = earthW.clone().add(r2VecArr);
+    pos.setXYZ(0,   pBurn.x,   pBurn.y,   pBurn.z);
+    pos.setXYZ(N,   pArrive.x, pArrive.y, pArrive.z);
+    pos.needsUpdate = true;
+    transferLine.computeLineDistances();
+    arrivalMarker2.position.copy(pArrive);
+  }
+
+  // --- 2) Parking-orbit WAIT arc: from entry angle to 0 along + direction ---
+  {
+    const pos = waitArcGeom.getAttribute('position');
+    const N = ORBIT.segments;
+    const entryAng = wrap2Pi(-n_park * wait); // since entry → (entry + n_park*wait) == 0
+    for (let i=0;i<=N;i++){
+      const t = i/N;
+      const φ = wrap2Pi(entryAng + t*(wrap2Pi(0 - entryAng)));
+      const dir = u.clone().multiplyScalar(Math.cos(φ)).add(v.clone().multiplyScalar(Math.sin(φ)));
+      const p = earthW.clone().add(dir.multiplyScalar(r1));
+      pos.setXYZ(i, p.x, p.y, p.z);
+    }
+    pos.needsUpdate = true;
+  }
+
+  // --- 3) Ascent path: straight or slight curve from current site (now) to entry point ---
+  {
+    const entryAng = wrap2Pi(-n_park * wait);
+    const entryDir = u.clone().multiplyScalar(Math.cos(entryAng)).add(v.clone().multiplyScalar(Math.sin(entryAng)));
+    const pEntry   = earthW.clone().add(entryDir.multiplyScalar(r1));
+
+    const pStart   = worldPosOf(earthSite); // site now
+    const pos = ascentGeom.getAttribute('position');
+    const N = ORBIT.ascentSegments;
+    for (let i=0;i<=N;i++){
+      const t = i/N;
+      // simple eased lerp; you can fancy this into a bezier if you like
+      const s = t*t*(3-2*t);
+      const x = pStart.x + (pEntry.x - pStart.x)*s;
+      const y = pStart.y + (pEntry.y - pStart.y)*s;
+      const z = pStart.z + (pEntry.z - pStart.z)*s;
+      pos.setXYZ(i, x,y,z);
+    }
+    pos.needsUpdate = true;
+  }
+
+  // Telemetry (in sim-days)
+  return {
+    waitDays: wait * TIME.daysPerSecond,
+    tofDays:  tof  * TIME.daysPerSecond,
+    totalDays: (wait+tof) * TIME.daysPerSecond
+  };
 }
 
 function wrap2Pi(a){ a%=TAU; return a<0?a+TAU:a; }
@@ -524,13 +724,12 @@ function animate() {
     if (u >= 1) mission = null;
   }
 
-  // --- Live Hohmann transfer (anchored site→site) ---
-  const ho = updateHohmannArc_anchored();
-  const secToDays = (sec) => sec * (TIME.daysPerSecond);
+  // --- Live Parking→Transfer update ---
+  const telem = updateParkingOrbitAndTransfer();
   if (statusEl) {
     statusEl.textContent =
-      `Hohmann (site→site) · TOF ${secToDays(ho.tof).toFixed(2)} d · ` +
-      `Wait ${secToDays(ho.wait).toFixed(2)} d · Total ${(secToDays(ho.total)).toFixed(2)} d`;
+      `Parking→Transfer · Wait ${telem.waitDays.toFixed(2)} d  · ` +
+      `TOF ${telem.tofDays.toFixed(2)} d  · Total ${telem.totalDays.toFixed(2)} d`;
   }
 
   controls.update();
