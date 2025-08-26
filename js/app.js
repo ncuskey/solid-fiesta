@@ -186,14 +186,14 @@ const mars = new THREE.Mesh(
 );
 mars.position.set(50, 0, 0);
 marsPivot.add(mars);
-// ---------- Hohmann (Earth-site -> Moon-site) ANCHORED ----------
+// ---------- Hohmann (Earth-site -> Moon-site) — anchored & planar to both sites ----------
 const HOHMANN = {
   shipAlt: 0.00,  // start altitude above Earth surface (0 = surface)
   segments: 128,
   color: 0x66ccff,
   dashSize: 0.6,
   gapSize: 0.4,
-  moonRate: 2.2   // will be overwritten each frame from sim rates
+  moonRate: 2.2   // overwritten in animate()
 };
 
 let transferArc, transferGeom, arrivalMarker, waitLine, waitGeom;
@@ -218,7 +218,7 @@ function ensureTransferPrimitives() {
     );
     scene.add(arrivalMarker);
 
-    // faint "wait" segment (current site -> future launch site)
+    // Optional: faint wait segment (now-site -> launch-time site)
     waitGeom = new THREE.BufferGeometry();
     waitGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(2 * 3), 3));
     const waitMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 });
@@ -227,145 +227,127 @@ function ensureTransferPrimitives() {
   }
 }
 
-function wrap2Pi(a){ a%=2*Math.PI; return a<0?a+2*Math.PI:a; }
-function wrapPi(a){ a=(a+Math.PI)%(2*Math.PI); if(a<0)a+=2*Math.PI; return a-Math.PI; }
+function wrap2Pi(a){ a%=TAU; return a<0?a+TAU:a; }
+function wrapPi(a){ a=(a+Math.PI)%TAU; if(a<0)a+=TAU; return a-Math.PI; }
 function angleXZ(v){ return Math.atan2(v.z, v.x); }
 function rotY(v, ang){
   const c = Math.cos(ang), s = Math.sin(ang);
   return new THREE.Vector3(c*v.x - s*v.z, v.y, s*v.x + c*v.z);
 }
 
+// Minimal hohmann time-of-flight between radii r1 and r2 with parameter mu
+function hohmannTOF(r1, r2, mu){
+  const a = 0.5*(r1+r2);
+  return Math.PI * Math.sqrt((a*a*a)/mu);
+}
+
 /**
- * Build a Hohmann arc that *truly* connects:
- *   - Start: Earth launch site at t_launch (after wait)
- *   - End:   Moon landing site at t_arr = t_launch + TOF
- *
- * We solve the phase condition with *both* Earth spin and Moon orbital motion:
- *   φ_now = θ_moonSite_now - θ_earthSite_now
- *   φ_req = π - n_moon * TOF
- *   φ_now + (n_moon - n_spinE) * wait = φ_req   (mod 2π)
+ * Rebuild an ellipse *each frame* so the arc always connects:
+ *  - Start = Earth site at launch time (after wait)
+ *  - End   = Moon site at arrival time (wait + TOF)
+ * The ellipse is drawn in the plane spanned by those two future site vectors.
  */
 function updateHohmannArc_anchored() {
   ensureTransferPrimitives();
 
-  // --- World centers now
+  // 0) Snapshot “now”
   const earthW_now = worldPosOf(earth);
 
-  // --- Site local vectors (fixed on bodies)
+  // Site local vectors (fixed on bodies)
   const earthSiteLocal = latLonToLocal(EARTH_SITE.latDeg, EARTH_SITE.lonDeg, EARTH_SITE.radius);
   const moonSiteLocal  = latLonToLocal(MOON_SITE.latDeg,  MOON_SITE.lonDeg,  MOON_SITE.radius);
 
-  // --- Current angles/rates
-  const w = currentAngularRates();   // rad / real-sec
-  const n_moon  = HOHMANN.moonRate;  // already kept in sync in animate()
+  // Rates (rad / real-second)
+  const w = currentAngularRates();
+  const n_moon  = HOHMANN.moonRate;               // orbit of Moon about Earth
   const n_spinE = (TAU / SIDEREAL_DAY) * (TIME.daysPerSecond * TIME.multiplier); // Earth spin
 
-  // Earth site direction NOW (from Earth's center)
-  const thetaLaunch_now = angleXZ(earthSiteLocal.clone().applyAxisAngle(new THREE.Vector3(0,1,0), earth.rotation.y));
-  // Moon site direction NOW (from Earth's center)
-  // Compose: orbit vector (moon about Earth) + local site vector (rotated by moon's orbital angle)
-  const moonOrbitLocal = moon.position.clone(); // e.g. (4,0,0)
+  // Current site angles (from Earth's center)
+  const thetaE_now = angleXZ(earthSiteLocal.clone().applyAxisAngle(new THREE.Vector3(0,1,0), earth.rotation.y));
+  const moonOrbitLocal = moon.position.clone();   // center-to-moon (e.g., 4,0,0)
   const moonSiteNowEC  = rotY(moonOrbitLocal.clone().add(moonSiteLocal), moonPivot.rotation.y);
-  const thetaMoonSite_now = angleXZ(moonSiteNowEC);
+  const thetaM_now     = angleXZ(moonSiteNowEC);
 
-  // Radii for Hohmann (periapsis at Earth site radius, apoapsis at Moon site *arrival* radius)
+  // Radii
   const r1 = EARTH_SITE.radius + HOHMANN.shipAlt;
 
-  // We need TOF to compute φ_req, but TOF depends on a, which depends on r2 at arrival.
-  // First, approximate with r2 at "now", then refine once with predicted arrival.
-  function hohmannTOF(r1, r2, mu){
-    const a = 0.5*(r1+r2);
-    return Math.PI * Math.sqrt((a*a*a)/mu);
-  }
-
-  // µ chosen so Moon's mean motion matches our sim: n_moon^2 = µ / r_moonCenter^3
+  // µ chosen to match the sim’s lunar mean motion: n_moon^2 = µ / r_moonCenter^3
   const rMoonCenter = moonOrbitLocal.length();
   const mu = (n_moon*n_moon) * (rMoonCenter**3);
 
-  // Initial guess r2 using "now"
+  // First guess TOF using r2 at "now", then we’ll refine after predicting arrival
   let r2_guess = moonSiteNowEC.length();
   let tof = hohmannTOF(r1, r2_guess, mu);
 
-  // Solve for wait so that (Earth-site at t_launch) + π aligns with (Moon-site at t_launch+TOF).
+  // Solve wait so: θM(now) + n_moon*(wait+tof)  ≡  θE(now) + n_spinE*wait + π  (mod 2π)
   const phi_req = wrap2Pi(Math.PI - n_moon * tof);
-  const phi_now = wrap2Pi(thetaMoonSite_now - thetaLaunch_now);
+  const phi_now = wrap2Pi(thetaM_now - thetaE_now);
   const denom = n_moon - n_spinE;
+  let wait = Math.abs(denom) < 1e-9 ? 0 : wrap2Pi(phi_req - phi_now) / denom;
 
-  let wait;
-  if (Math.abs(denom) < 1e-6) {
-    wait = 0; // degenerate (very unlikely here)
+  // Predict arrival Moon-site, refine TOF with its actual radius
+  const thetaM_arr = moonPivot.rotation.y + n_moon * (wait + tof);
+  const r2VecArr   = rotY(moonOrbitLocal.clone().add(moonSiteLocal), thetaM_arr);
+  const r2         = r2VecArr.length();
+  tof = hohmannTOF(r1, r2, mu);
+
+  // Re-solve wait using refined TOF
+  const phi_req2 = wrap2Pi(Math.PI - n_moon * tof);
+  wait = Math.abs(denom) < 1e-9 ? 0 : wrap2Pi(phi_req2 - phi_now) / denom;
+
+  // 1) Future endpoint vectors from Earth's center (Earth’s *launch* site & Moon’s *arrival* site)
+  const theta_launch = thetaE_now + n_spinE * wait;
+  const r1_launch_ec = new THREE.Vector3(Math.cos(theta_launch)*r1, 0, Math.sin(theta_launch)*r1);
+
+  const theta_arr    = thetaM_now + n_moon * (wait + tof);
+  const r2_arr_ec    = rotY(moonOrbitLocal.clone().add(moonSiteLocal), theta_arr);
+
+  // 2) Build plane basis that contains both endpoints
+  const u = r1_launch_ec.clone().normalize();           // periapsis direction
+  let n = new THREE.Vector3().crossVectors(r1_launch_ec, r2_arr_ec);
+  const nLen = n.length();
+  if (nLen < 1e-6) {
+    // nearly colinear: pick a stable normal not parallel to u
+    const up = Math.abs(u.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
+    n = new THREE.Vector3().crossVectors(u, up).normalize();
   } else {
-    const delta = wrap2Pi(phi_req - phi_now);
-    wait = denom > 0 ? (delta / denom) : (( (2*Math.PI - delta) % (2*Math.PI) ) / -denom);
+    n.normalize();
   }
+  const v = new THREE.Vector3().crossVectors(n, u).normalize();  // quadrant basis inside the plane
 
-  // Predict arrival Moon-site vector at t_arr = wait + TOF, recompute r2 and refine TOF once
-  const theta_moon_arr = moonPivot.rotation.y + n_moon * (wait + tof);
-  const moonSiteArrEC  = rotY(moonOrbitLocal.clone().add(moonSiteLocal), theta_moon_arr);
-  const r2 = moonSiteArrEC.length();
-  tof = hohmannTOF(r1, r2, mu); // one refinement
-  // Recompute wait with refined TOF
-  {
-    const phi_req2 = wrap2Pi(Math.PI - n_moon * tof);
-    const delta2 = wrap2Pi(phi_req2 - phi_now);
-    wait = denom > 0 ? (delta2 / denom) : (( (2*Math.PI - delta2) % (2*Math.PI) ) / -denom);
-  }
-
-  // Final launch/arrival vectors & angles
-  const theta_launch = thetaLaunch_now + n_spinE * wait;   // Earth-site angle at launch
-  const theta_arrive = thetaMoonSite_now + n_moon * (wait + tof);
-
-  // Build ellipse with periapsis aligned to θ_launch, apoapsis aligned to θ_arrive.
-  // Hohmann peri/apo are 180° apart, so this works by construction.
+  // 3) Ellipse geometry (periapsis at +u, apoapsis at -u)
   const a = 0.5*(r1 + r2);
   const e = (r2 - r1) / (r2 + r1);
 
-  // Draw the arc in world space, centered at Earth (position "now" for visualization).
   const pos = transferGeom.getAttribute('position');
   for (let i = 0; i <= HOHMANN.segments; i++) {
-    const nu = (i / HOHMANN.segments) * Math.PI;  // 0..π
+    const nu = (i / HOHMANN.segments) * Math.PI;        // true anomaly 0..π
     const r  = (a * (1 - e*e)) / (1 + e * Math.cos(nu));
-
-    // local ellipse coords with periapsis on +x
-    const lx = r * Math.cos(nu);
-    const lz = r * Math.sin(nu);
-
-    // rotate so periapsis points along θ_launch
-    const wxz = rotY(new THREE.Vector3(lx, 0, lz), theta_launch);
-
-    pos.setX(i, earthW_now.x + wxz.x);
-    pos.setY(i, earthW_now.y);
-    pos.setZ(i, earthW_now.z + wxz.z);
+    const dir = u.clone().multiplyScalar(Math.cos(nu)).add(
+                v.clone().multiplyScalar(Math.sin(nu)));
+    const p = dir.multiplyScalar(r).add(earthW_now);
+    pos.setXYZ(i, p.x, p.y, p.z);
   }
 
-  // Pin the endpoints EXACTLY to the predicted sites (robust against rounding):
-  // Start = Earth site at launch (future)
-  const earthSiteLaunchEC = new THREE.Vector3(
-    Math.cos(theta_launch) * r1, 0, Math.sin(theta_launch) * r1
-  );
-  pos.setX(0, earthW_now.x + earthSiteLaunchEC.x);
-  pos.setY(0, earthW_now.y);
-  pos.setZ(0, earthW_now.z + earthSiteLaunchEC.z);
+  // 4) Pin endpoints EXACTLY to the sites (robust snap)
+  const pLaunchW = earthW_now.clone().add(r1_launch_ec);
+  pos.setXYZ(0, pLaunchW.x, pLaunchW.y, pLaunchW.z);
 
-  // End = Moon site at arrival (future)
-  const endW = earthW_now.clone().add(moonSiteArrEC);
-  pos.setX(HOHMANN.segments, endW.x);
-  pos.setY(HOHMANN.segments, endW.y);
-  pos.setZ(HOHMANN.segments, endW.z);
+  const pArriveW = earthW_now.clone().add(r2_arr_ec);
+  pos.setXYZ(HOHMANN.segments, pArriveW.x, pArriveW.y, pArriveW.z);
 
   pos.needsUpdate = true;
   transferArc.computeLineDistances();
 
-  // Move arrival marker to the site-at-arrival
-  arrivalMarker.position.copy(endW);
+  // arrival marker
+  arrivalMarker.position.copy(pArriveW);
 
-  // Draw the "wait" line from *current* Earth site to *future* launch point
+  // wait line (now-site -> launch-time site)
   {
-    const earthSiteNowW   = worldPosOf(earthSite);
-    const earthSiteLaunchW= earthW_now.clone().add(earthSiteLaunchEC);
+    const earthSiteNowW = worldPosOf(earthSite);
     const wpos = waitGeom.getAttribute('position');
-    wpos.setXYZ(0, earthSiteNowW.x,    earthSiteNowW.y,    earthSiteNowW.z);
-    wpos.setXYZ(1, earthSiteLaunchW.x, earthSiteLaunchW.y, earthSiteLaunchW.z);
+    wpos.setXYZ(0, earthSiteNowW.x, earthSiteNowW.y, earthSiteNowW.z);
+    wpos.setXYZ(1, pLaunchW.x,      pLaunchW.y,      pLaunchW.z);
     wpos.needsUpdate = true;
   }
 
@@ -496,7 +478,6 @@ function animate() {
   eAngle    += w.earth * dt;
   mAngle    += w.mars  * dt;
   moonAngle += w.moon  * dt;
-
   earthPivot.rotation.y = eAngle;
   marsPivot.rotation.y  = mAngle;
   moonPivot.rotation.y  = moonAngle;
@@ -505,8 +486,8 @@ function animate() {
   const wEarthSpin = (TAU / SIDEREAL_DAY) * (TIME.daysPerSecond * TIME.multiplier);
   earth.rotation.y += wEarthSpin * dt;
 
-  // keep Hohmann viz in sync with the sim's moon rate (rad/sec)
-  HOHMANN.moonRate = w.moon;
+  // keep Hohmann viz in sync with current sim rate
+  HOHMANN.moonRate = currentAngularRates().moon;
 
   // Camera tween update
   if (camTween) {
@@ -548,9 +529,8 @@ function animate() {
   const secToDays = (sec) => sec * (TIME.daysPerSecond);
   if (statusEl) {
     statusEl.textContent =
-      `Hohmann(site→site): TOF ${secToDays(ho.tof).toFixed(2)} d  ` +
-      `Wait ${secToDays(ho.wait).toFixed(2)} d  ` +
-      `Total ${(secToDays(ho.total)).toFixed(2)} d`;
+      `Hohmann (site→site) · TOF ${secToDays(ho.tof).toFixed(2)} d · ` +
+      `Wait ${secToDays(ho.wait).toFixed(2)} d · Total ${(secToDays(ho.total)).toFixed(2)} d`;
   }
 
   controls.update();
