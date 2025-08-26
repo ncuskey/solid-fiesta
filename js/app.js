@@ -1,6 +1,48 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js';
 
+// --- Simulation constants & config (minimal defaults) ---
+const TAU = Math.PI * 2;
+// Simulation speed: how many simulated days pass per real second
+const TIME = { daysPerSecond: 0.5, multiplier: 1.0 };
+// Earth's sidereal day in days
+const SIDEREAL_DAY = 0.99726968;
+
+// Orbit/visual defaults used by the parking/transfer visuals
+const ORBIT = {
+  rPark: 4.0,            // two Earth radii parking orbit (scene units)
+  segments: 64,
+  ascentSegments: 24,
+  ascentColor: 0x44ff88,
+  orbitColor: 0xffffff
+};
+
+const TRANSFER = {
+  color: 0x66ccff,
+  dashSize: 0.6,
+  gapSize: 0.4
+};
+
+// UI/status and mission placeholders
+const statusEl = document.getElementById('status');
+let mission = null;
+
+// Return current angular rates (rad / real-second) for bodies used in the sim.
+// Uses simple fixed orbital periods (days) and the global TIME scale.
+function currentAngularRates() {
+  // Periods (days) - simple approximations for the demo
+  const moonPeriodDays = 27.321661; // sidereal month
+  const earthYearDays  = 365.256;   // sidereal year
+  const marsYearDays   = 686.98;    // sidereal Mars year approx
+
+  const scale = TIME.daysPerSecond * (TIME.multiplier ?? 1);
+  return {
+    moon: (TAU / moonPeriodDays) * scale,
+    earth: (TAU / earthYearDays) * scale,
+    mars: (TAU / marsYearDays) * scale
+  };
+}
+
 // ---------- Scene / Camera / Renderer ----------
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
@@ -13,152 +55,53 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.getElementById('game-container').appendChild(renderer.domElement);
 
+// Camera controls
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.07;
+controls.minDistance = 4;
+controls.maxDistance = 300;
+// topdown follow helpers
+const TOPDOWN = { height: 40, polarMax: Math.PI * 0.2, targetLerp: 0.15, camLerp: 0.09 };
+const topdownOffsetXZ = new THREE.Vector3(12, 0, 0);
+
+// Helper: return an object's world-space position as a Vector3
+function worldPosOf(obj) {
+  const p = new THREE.Vector3();
+  if (!obj) return p;
+  obj.getWorldPosition(p);
+  return p;
+}
+
+// Helper: convert lat/lon (degrees) + radius -> local Cartesian (Y up)
+function latLonToLocal(latDeg, lonDeg, r) {
+  const lat = THREE.MathUtils.degToRad(latDeg);
+  const lon = THREE.MathUtils.degToRad(lonDeg);
+  // latitude: 0 = equator, +90 = north pole. Convert to spherical coordinates
+  const x = r * Math.cos(lat) * Math.cos(lon);
+  const z = r * Math.cos(lat) * Math.sin(lon);
+  const y = r * Math.sin(lat);
+  return new THREE.Vector3(x, y, z);
+}
+
+// Default pinned sites (lat, lon, radius in scene units)
+const EARTH_SITE = { latDeg: 28.5, lonDeg: -80.6, radius: 2.0 }; // Cape Canaveral approx
+const MOON_SITE  = { latDeg: 0.67,  lonDeg: 23.47,  radius: 0.5 }; // Tranquility Base-ish
+
 // ---------- UI elements (DOM) ----------
 const launchBtn = document.getElementById('launch-btn');
 const upgradeBtn = document.getElementById('upgrade-btn');
-const statusEl   = document.getElementById('status');
 
-// Simple helper to get an object's world position
-function worldPosOf(obj) {
-  const v = new THREE.Vector3();
-  return obj.getWorldPosition(v);
-}
-
-// ---------- Ship / mission ----------
-const ship = new THREE.Mesh(
-  new THREE.SphereGeometry(0.35, 16, 16),
-  new THREE.MeshBasicMaterial({ color: 0xffffff })
-);
-ship.visible = false;
-scene.add(ship);
-
-let mission = null; // { start, duration, startPos, endPos }
-
-launchBtn?.addEventListener('click', () => {
-  const startPos = worldPosOf(earth);
-  const endPos   = worldPosOf(mars); // sample at launch
-  mission = {
-    start: performance.now(),
-    duration: 30000, // 30s demo
-    startPos, endPos
-  };
-  ship.position.copy(startPos);
-  ship.visible = true;
-  statusEl.textContent = 'Launching ship from Earth to Mars...';
-});
-
-// ---------- Controls ----------
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-
-// start focused on Earth-Moon with tighter zoom
-controls.minDistance = 4;
-controls.maxDistance = 40;
-
-// TOP-DOWN follow config
-const TOPDOWN = { height: 22, targetLerp: 0.30, camLerp: 0.18, polarMax: 0.35 };
-// Fixed horizontal (XZ) offset so we keep the same world-facing direction as Earth moves.
-let topdownOffsetXZ = new THREE.Vector3();
-
-// --- Time & orbital periods ---
-const TAU = Math.PI * 2;
-
-// set sim speed: ~1 sim-day every real second (was 1 day / 5s)
-const TIME = {
-  daysPerSecond: 0.5,    // 0.5 sim-days per real second (slower)
-  multiplier: 1.0        // live knob if you want to speed up/down later
-};
-
-// orbital periods in days (sidereal month => correct *orbits/year*)
-const PERIOD = {
-  earth: 365.25,
-  moon:  27.321661,
-  mars:  686.98
-};
-
-// ===== Parking orbit + transfer config =====
-const ORBIT = {
-  rPark: 4.0,           // 2 × Earth radius (Earth radius is 2 in the scene)
-  segments: 96,         // smoothness for circle/arc drawing
-  ascentSegments: 24,   // ascent polyline resolution
-  orbitColor: 0xffffff, // wait arc color
-  ascentColor: 0x00ff88 // ascent line color
-};
-
-const TRANSFER = {
-  color: 0x66ccff,
-  dashSize: 0.6,
-  gapSize: 0.4
-};
-
-// compute angular rates (rad / real-second) from periods + time scale
-function currentAngularRates() {
-  const s = TIME.daysPerSecond * TIME.multiplier; // sim-days per real-second
-  return {
-    earth: TAU / PERIOD.earth * s,
-    moon:  TAU / PERIOD.moon  * s,
-    mars:  TAU / PERIOD.mars  * s
-  };
-}
-
-// ---- Site config (edit lat/lon to taste; longitude: +E, -W) ----
-const EARTH_SITE = { latDeg: 28.5,  lonDeg: -80.6,  radius: 2.0 };   // ~Cape Canaveral
-const MOON_SITE  = { latDeg:  0.67, lonDeg:  23.47, radius: 0.5 };   // ~Tranquility Base
-
-// Sidereal day for Earth's self-rotation (days)
-const SIDEREAL_DAY = 0.99726968;
-
-// lat/lon -> local space on a Y-up sphere (x = r cosφ cosλ, y = r sinφ, z = r cosφ sinλ)
-function latLonToLocal(latDeg, lonDeg, r) {
-  const φ = THREE.MathUtils.degToRad(latDeg);
-  const λ = THREE.MathUtils.degToRad(lonDeg);
-  const c = Math.cos(φ);
-  return new THREE.Vector3(r * c * Math.cos(λ), r * Math.sin(φ), r * c * Math.sin(λ));
-}
-
-// ---------- Lights ----------
-scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-const pointLight = new THREE.PointLight(0xffffff, 1.2);
-pointLight.position.set(0, 0, 0);
-scene.add(pointLight);
-
-// ---------- Sun ----------
-const sun = new THREE.Mesh(
-  new THREE.SphereGeometry(8, 32, 32),
-  new THREE.MeshBasicMaterial({ color: 0xffcc00 })
-);
-scene.add(sun);
-
-// ---------- Starfield ----------
-function addStars(count = 1500, spread = 900) {
-  const g = new THREE.BufferGeometry();
-  const pos = new Float32Array(count * 3);
-  for (let i = 0; i < count; i++) {
-    const r = spread * (0.25 + Math.random() * 0.75);
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    pos[i*3+0] = r * Math.sin(phi) * Math.cos(theta);
-    pos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
-    pos[i*3+2] = r * Math.cos(phi);
-  }
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const m = new THREE.PointsMaterial({ size: 0.8, sizeAttenuation: true, color: 0xffffff });
-  const pts = new THREE.Points(g, m);
-  scene.add(pts);
-  return pts;
-}
-const starfield = addStars();
-
-// ---------- Pivots & Planets ----------
-const solarPivot = new THREE.Object3D(); // Sun at origin
+// Minimal solar system pivots and Earth mesh (created early so later code can reference them)
+const solarPivot = new THREE.Object3D();
 scene.add(solarPivot);
 
 const earthPivot = new THREE.Object3D();
 solarPivot.add(earthPivot);
 
 const earth = new THREE.Mesh(
-  new THREE.SphereGeometry(2, 32, 32),
-  new THREE.MeshStandardMaterial({ color: 0x3366ff })
+  new THREE.SphereGeometry(2.0, 32, 32),
+  new THREE.MeshStandardMaterial({ color: 0x2266ff })
 );
 earth.position.set(30, 0, 0);
 earthPivot.add(earth);
