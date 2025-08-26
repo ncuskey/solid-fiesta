@@ -25,8 +25,32 @@ controls.maxDistance = 40;
 const TOPDOWN = { height: 22, targetLerp: 0.30, camLerp: 0.18, polarMax: 0.35 };
 // Fixed horizontal (XZ) offset so we keep the same world-facing direction as Earth moves.
 let topdownOffsetXZ = new THREE.Vector3();
-// Global simulation speed multiplier (1.0 = real-time, <1 = slower, >1 = faster)
-const TIME_SCALE = 0.5; // change this to slow down / speed up the orbital simulation
+
+// --- Time & orbital periods ---
+const TAU = Math.PI * 2;
+
+// set sim speed: ~1 sim-day every real second (was 1 day / 5s)
+const TIME = {
+  daysPerSecond: 1.0,    // 1.0 sim-days per real second (faster)
+  multiplier: 1.0        // live knob if you want to speed up/down later
+};
+
+// orbital periods in days (sidereal month => correct *orbits/year*)
+const PERIOD = {
+  earth: 365.25,
+  moon:  27.321661,
+  mars:  686.98
+};
+
+// compute angular rates (rad / real-second) from periods + time scale
+function currentAngularRates() {
+  const s = TIME.daysPerSecond * TIME.multiplier; // sim-days per real-second
+  return {
+    earth: TAU / PERIOD.earth * s,
+    moon:  TAU / PERIOD.moon  * s,
+    mars:  TAU / PERIOD.mars  * s
+  };
+}
 
 // ---------- Lights ----------
 scene.add(new THREE.AmbientLight(0xffffff, 0.5));
@@ -254,15 +278,14 @@ function updateHohmannArc() {
 
   // Choose µ so Moon's angular rate matches sim:
   // n_m^2 = µ / r2^3  => µ = n_m^2 * r2^3
-  // scale moonRate by TIME_SCALE so the transfer prediction matches the slowed sim
-  const mu = ((HOHMANN.moonRate * TIME_SCALE) ** 2) * (r2 ** 3);
+  const mu = (HOHMANN.moonRate ** 2) * (r2 ** 3);
 
   // Hohmann time of flight (half the ellipse period)
   const tof = Math.PI * Math.sqrt((a ** 3) / mu); // seconds in sim-time
 
   // Moon's **current** angle and predicted arrival angle
   const thetaMoonNow = Math.atan2(moonEC.z, moonEC.x);
-  const thetaMoonArr = thetaMoonNow + (HOHMANN.moonRate * TIME_SCALE) * tof;
+  const thetaMoonArr = thetaMoonNow + HOHMANN.moonRate * tof;
 
   // Orient ellipse: periapsis angle = arrival - PI (apolune opposite)
   const thetaPeri = thetaMoonArr - Math.PI;
@@ -410,15 +433,18 @@ function animate() {
   requestAnimationFrame(animate);
 
   const dt = clock.getDelta();
-  // apply global time scale to orbital motion (keeps mission/tweens at real-time)
-  const simDt = dt * TIME_SCALE;
-  eAngle    += 0.6  * simDt;
-  mAngle    += 0.48 * simDt;
-  moonAngle += 2.2  * simDt;
+  // derive current angular rates (rad / real-second) from orbital periods + time scale
+  const w = currentAngularRates();
+  eAngle    += w.earth * dt;
+  mAngle    += w.mars  * dt;
+  moonAngle += w.moon  * dt;
 
   earthPivot.rotation.y = eAngle;
   marsPivot.rotation.y  = mAngle;
   moonPivot.rotation.y  = moonAngle;
+
+  // keep Hohmann viz in sync with the sim's moon rate (rad/sec)
+  HOHMANN.moonRate = w.moon;
 
   // Camera tween update
   if (camTween) {
