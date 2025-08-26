@@ -31,7 +31,7 @@ const TAU = Math.PI * 2;
 
 // set sim speed: ~1 sim-day every real second (was 1 day / 5s)
 const TIME = {
-  daysPerSecond: 1.0,    // 1.0 sim-days per real second (faster)
+  daysPerSecond: 0.5,    // 0.5 sim-days per real second (slower)
   multiplier: 1.0        // live knob if you want to speed up/down later
 };
 
@@ -50,6 +50,21 @@ function currentAngularRates() {
     moon:  TAU / PERIOD.moon  * s,
     mars:  TAU / PERIOD.mars  * s
   };
+}
+
+// ---- Site config (edit lat/lon to taste; longitude: +E, -W) ----
+const EARTH_SITE = { latDeg: 28.5,  lonDeg: -80.6,  radius: 2.0 };   // ~Cape Canaveral
+const MOON_SITE  = { latDeg:  0.67, lonDeg:  23.47, radius: 0.5 };   // ~Tranquility Base
+
+// Sidereal day for Earth's self-rotation (days)
+const SIDEREAL_DAY = 0.99726968;
+
+// lat/lon -> local space on a Y-up sphere (x = r cosφ cosλ, y = r sinφ, z = r cosφ sinλ)
+function latLonToLocal(latDeg, lonDeg, r) {
+  const φ = THREE.MathUtils.degToRad(latDeg);
+  const λ = THREE.MathUtils.degToRad(lonDeg);
+  const c = Math.cos(φ);
+  return new THREE.Vector3(r * c * Math.cos(λ), r * Math.sin(φ), r * c * Math.sin(λ));
 }
 
 // ---------- Lights ----------
@@ -108,6 +123,24 @@ const moon = new THREE.Mesh(
 );
 moon.position.set(4, 0, 0);
 moonPivot.add(moon);
+
+// --- Earth launch site marker ---
+const earthSiteLocal = latLonToLocal(EARTH_SITE.latDeg, EARTH_SITE.lonDeg, EARTH_SITE.radius);
+const earthSite = new THREE.Mesh(
+  new THREE.SphereGeometry(0.15, 12, 12),
+  new THREE.MeshBasicMaterial({ color: 0x00ff88 })
+);
+earthSite.position.copy(earthSiteLocal);
+earth.add(earthSite);
+
+// --- Moon landing site marker ---
+const moonSiteLocal = latLonToLocal(MOON_SITE.latDeg, MOON_SITE.lonDeg, MOON_SITE.radius);
+const moonSite = new THREE.Mesh(
+  new THREE.SphereGeometry(0.12, 12, 12),
+  new THREE.MeshBasicMaterial({ color: 0xffcc66 })
+);
+moonSite.position.copy(moonSiteLocal);
+moon.add(moonSite);
 
 const marsPivot = new THREE.Object3D();
 solarPivot.add(marsPivot);
@@ -201,19 +234,40 @@ function niceDir() {
   return new THREE.Vector3(0.4, 0.35, 0.85).normalize();
 }
 
-// --- Hohmann (Earth->Moon) live viz config ---
+// --- Hohmann (Earth-site -> Moon-site) viz ---
 const HOHMANN = {
-  shipAlt: 0.8,    // start radius = Earth radius (2) + this alt => r1 = 2.8
-  segments: 128,   // smoothness of transfer arc
-  moonRate: 2.2,   // must match your sim's moonAngle rate (rad/sec)
+  shipAlt: 0.00,   // start altitude above Earth surface (0 = surface)
+  segments: 128,
+  moonRate: 2.2,   // overwritten each frame from sim
   color: 0x66ccff,
   dashSize: 0.6,
   gapSize: 0.4
 };
 
-let transferArc = null;        // THREE.Line (dashed)
-let transferGeom = null;       // geometry for the arc
-let arrivalMarker = null;      // small sphere at expected intercept
+let transferArc = null;
+let transferGeom = null;
+let arrivalMarker = null;
+
+function ensureTransferPrimitives() {
+  if (!transferArc) {
+    transferGeom = new THREE.BufferGeometry();
+    const positions = new Float32Array((HOHMANN.segments + 1) * 3);
+    transferGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.LineDashedMaterial({
+      color: HOHMANN.color, dashSize: HOHMANN.dashSize, gapSize: HOHMANN.gapSize,
+      transparent: true, opacity: 0.9
+    });
+    transferArc = new THREE.Line(transferGeom, mat);
+    transferArc.computeLineDistances();
+    scene.add(transferArc);
+
+    arrivalMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.25, 16, 16),
+      new THREE.MeshBasicMaterial({ color: HOHMANN.color })
+    );
+    scene.add(arrivalMarker);
+  }
+}
 
 function wrapPi(a) {
   // wrap to (-PI, PI]
@@ -227,114 +281,78 @@ function wrap2Pi(a) {
   return a < 0 ? a + 2 * Math.PI : a;
 }
 
-function ensureTransferPrimitives() {
-  if (!transferArc) {
-    transferGeom = new THREE.BufferGeometry();
-    const positions = new Float32Array((HOHMANN.segments + 1) * 3);
-    transferGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    transferGeom.computeBoundingSphere();
-    const mat = new THREE.LineDashedMaterial({
-      color: HOHMANN.color,
-      dashSize: HOHMANN.dashSize,
-      gapSize: HOHMANN.gapSize,
-      transparent: true,
-      opacity: 0.9
-    });
-    transferArc = new THREE.Line(transferGeom, mat);
-    transferArc.computeLineDistances();
-    scene.add(transferArc);
-
-    // Arrival marker
-    arrivalMarker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.25, 16, 16),
-      new THREE.MeshBasicMaterial({ color: HOHMANN.color })
-    );
-    scene.add(arrivalMarker);
-  }
+function angleXZ(v) { return Math.atan2(v.z, v.x); }
+function rotY(v, ang) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  return new THREE.Vector3(c * v.x - s * v.z, v.y, s * v.x + c * v.z);
 }
 
 /**
- * Update/draw the Hohmann transfer arc if you launched *now*.
- * - Treats Earth as the central body, Moon radius r2 from Earth's center
- * - r1 = Earth radius (2) + HOHMANN.shipAlt
- * - µ chosen so Moon's mean motion equals your sim's moonRate
- * - Arc oriented so apolune points to Moon's predicted angle at arrival
- * Returns some timing telemetry for the UI.
+ * Build a Hohmann arc from the Earth launch site to the Moon landing site.
+ * - Periapsis points along the Earth site direction (from Earth's center).
+ * - Apoapsis radius matches the Moon site *distance from Earth's center*.
+ * - Arrival marker placed at Moon site predicted position at arrival.
+ * Returns timing metrics (TOF, wait, total).
  */
-function updateHohmannArc() {
+function updateHohmannArc_siteToSite() {
   ensureTransferPrimitives();
 
-  // Earth-centered vectors
+  // Centers
   const earthW = worldPosOf(earth);
-  const moonW  = worldPosOf(moon);
-  const moonEC = moonW.clone().sub(earthW);
 
-  const r2 = moonEC.length();                // ~4 in your sim
-  const r1 = 2 + HOHMANN.shipAlt;            // Earth radius 2 + altitude
+  // Earth-site vector from Earth's center (now)
+  const earthSiteW = worldPosOf(earthSite);
+  const r1Vec = earthSiteW.clone().sub(earthW);
+  const r1 = Math.max(1e-6, r1Vec.length() + HOHMANN.shipAlt);
+  const thetaLaunch = angleXZ(r1Vec);
 
-  // Ellipse parameters
-  const a = 0.5 * (r1 + r2);
-  const e = (r2 - r1) / (r2 + r1);           // eccentricity
+  // Moon orbit (relative to Earth) & site vectors (now)
+  const moonOrbitLocal = moon.position.clone();   // e.g., (4,0,0)
+  const moonSiteLocal  = moonSite.position.clone();
 
-  // Choose µ so Moon's angular rate matches sim:
-  // n_m^2 = µ / r2^3  => µ = n_m^2 * r2^3
-  const mu = (HOHMANN.moonRate ** 2) * (r2 ** 3);
+  // Current and future Moon-site vectors from Earth's center (ignore Earth-Sun motion)
+  const thetaMoonNow = angleXZ(rotY(moonOrbitLocal.clone().add(moonSiteLocal), moonAngle));
+  // Hohmann ellipse params between r1 and r2
+  const r2VecNow = rotY(moonOrbitLocal.clone().add(moonSiteLocal), moonAngle);
+  const r2Now = r2VecNow.length();
+  const a = 0.5 * (r1 + r2Now);
+  // Use µ so that the Moon's mean motion matches the sim: µ = n^2 * r_moon_center^3
+  const rMoonCenter = moon.position.length();
+  const mu = (HOHMANN.moonRate ** 2) * (rMoonCenter ** 3);
+  const tof = Math.PI * Math.sqrt((a ** 3) / mu); // seconds (real-time)
 
-  // Hohmann time of flight (half the ellipse period)
-  const tof = Math.PI * Math.sqrt((a ** 3) / mu); // seconds in sim-time
+  // Predict Moon-site at arrival (rotate by +w_moon * tof around Earth)
+  const r2VecArr = rotY(moonOrbitLocal.clone().add(moonSiteLocal), moonAngle + HOHMANN.moonRate * tof);
+  const r2 = r2VecArr.length();
+  const thetaArrival = angleXZ(r2VecArr);
 
-  // Moon's **current** angle and predicted arrival angle
-  const thetaMoonNow = Math.atan2(moonEC.z, moonEC.x);
-  const thetaMoonArr = thetaMoonNow + HOHMANN.moonRate * tof;
+  // Ellipse eccentricity for r1->r2 Hohmann
+  const e = (r2 - r1) / (r2 + r1);
 
-  // Orient ellipse: periapsis angle = arrival - PI (apolune opposite)
-  const thetaPeri = thetaMoonArr - Math.PI;
-  const cosP = Math.cos(thetaPeri), sinP = Math.sin(thetaPeri);
-
-  // Build arc from true anomaly ν = 0..π (periapsis->apolune)
+  // Draw arc: ν = 0..π around periapsis aligned with Earth-site direction
   const pos = transferGeom.getAttribute('position');
   for (let i = 0; i <= HOHMANN.segments; i++) {
-    const nu = (i / HOHMANN.segments) * Math.PI; // 0..π
-    const r   = (a * (1 - e * e)) / (1 + e * Math.cos(nu));
-    // local ellipse (periapsis on +x)
+    const nu = (i / HOHMANN.segments) * Math.PI;
+    const r = (a * (1 - e * e)) / (1 + e * Math.cos(nu));
     const lx = r * Math.cos(nu);
     const lz = r * Math.sin(nu);
-    // rotate into world XZ by thetaPeri, then translate to Earth
-    const wx = earthW.x + (lx * cosP - lz * sinP);
-    const wz = earthW.z + (lx * sinP + lz * cosP);
-    pos.setX(i, wx);
-    pos.setY(i, earthW.y); // planar
-    pos.setZ(i, wz);
+    const wxz = rotY(new THREE.Vector3(lx, 0, lz), thetaLaunch);
+    pos.setXYZ(i, earthW.x + wxz.x, earthW.y, earthW.z + wxz.z);
   }
   pos.needsUpdate = true;
   transferArc.computeLineDistances();
 
-  // Arrival marker at ν = π
-  const rApo = r2; // equals apoapsis
-  const ax = earthW.x + (rApo * Math.cos(Math.PI) * cosP - rApo * Math.sin(Math.PI) * sinP);
-  const az = earthW.z + (rApo * Math.cos(Math.PI) * sinP + rApo * Math.sin(Math.PI) * cosP);
-  arrivalMarker.position.set(ax, earthW.y, az);
+  // Place arrival marker at Moon-site predicted position at arrival (Earth-centered frame)
+  const arrW = earthW.clone().add(r2VecArr);
+  arrivalMarker.position.copy(arrW);
 
-  // Phase-window math (how long until a *perfect* launch window given a fixed launch azimuth)
-  // Choose a fixed launch direction in world XZ (represents a "launch site" azimuth).
-  // Here we use +X; you can later wire this to a UI slider or an Earth longitude.
-  const launchDir = new THREE.Vector3(1, 0, 0);
-  const thetaLaunch = Math.atan2(launchDir.z, launchDir.x);
-
-  // Required phase for Hohmann: φ_req = π - n_moon * TOF
+  // Phase window using Earth-site as launch azimuth
+  // Required phase φ_req = π - n*TOF ; current φ_now = θ_moonSite_now - θ_launch
   const phiReq = Math.PI - (HOHMANN.moonRate * tof);
-  // Current phase between Moon and launch direction
   const phiNow = wrapPi(thetaMoonNow - thetaLaunch);
-  // Positive wait time until φ_now == φ_req (mod 2π)
   const wait = wrap2Pi(phiReq - phiNow) / HOHMANN.moonRate;
 
-  return {
-    tof,                          // seconds (sim)
-    phiReq,                       // radians
-    phiNow,                       // radians
-    wait,                         // seconds until next perfect window
-    total: wait + tof             // total time (wait + flight)
-  };
+  return { tof, wait, total: wait + tof };
 }
 
 function focusEarth(instant=false) {
@@ -443,6 +461,10 @@ function animate() {
   marsPivot.rotation.y  = mAngle;
   moonPivot.rotation.y  = moonAngle;
 
+  // Earth spins once per sidereal day (self-rotation) so a fixed launch site sweeps beneath
+  const wEarthSpin = (TAU / SIDEREAL_DAY) * (TIME.daysPerSecond * TIME.multiplier);
+  earth.rotation.y += wEarthSpin * dt;
+
   // keep Hohmann viz in sync with the sim's moon rate (rad/sec)
   HOHMANN.moonRate = w.moon;
 
@@ -481,14 +503,15 @@ function animate() {
     if (u >= 1) mission = null;
   }
 
-  // --- Live Hohmann transfer (Earth->Moon) ---
-  const ho = updateHohmannArc();
+  // --- Live Hohmann transfer (site->site) ---
+  const ho = updateHohmannArc_siteToSite();
+  // Optional: show times in sim-days instead of seconds
+  const secToDays = (sec) => sec * (TIME.daysPerSecond);
   if (statusEl) {
     statusEl.textContent =
-      `Mission ${mission ? 'in progress' : 'idle'} · ` +
-      `Hohmann TOF: ${ho.tof.toFixed(1)}s ` +
-      `· Wait: ${ho.wait.toFixed(1)}s ` +
-      `· Total: ${(ho.total).toFixed(1)}s`;
+      `Hohmann (site→site) · TOF: ${secToDays(ho.tof).toFixed(2)} d · ` +
+      `Wait: ${secToDays(ho.wait).toFixed(2)} d · ` +
+      `Total: ${secToDays(ho.total).toFixed(2)} d`;
   }
 
   controls.update();
