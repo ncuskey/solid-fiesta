@@ -21,10 +21,12 @@ controls.enableDamping = true;
 controls.minDistance = 4;
 controls.maxDistance = 40;
 
-// TOPDOWN follow constants for top-down Earth–Moon camera
+// TOP-DOWN follow config
 const TOPDOWN = { height: 22, targetLerp: 0.30, camLerp: 0.18, polarMax: 0.35 };
-// horizontal offset (XZ) to keep camera facing a fixed world direction while following Earth
-let topdownOffsetXZ = new THREE.Vector3(0, 0, 0);
+// Fixed horizontal (XZ) offset so we keep the same world-facing direction as Earth moves.
+let topdownOffsetXZ = new THREE.Vector3();
+// Global simulation speed multiplier (1.0 = real-time, <1 = slower, >1 = faster)
+const TIME_SCALE = 0.5; // change this to slow down / speed up the orbital simulation
 
 // ---------- Lights ----------
 scene.add(new THREE.AmbientLight(0xffffff, 0.5));
@@ -175,6 +177,143 @@ function niceDir() {
   return new THREE.Vector3(0.4, 0.35, 0.85).normalize();
 }
 
+// --- Hohmann (Earth->Moon) live viz config ---
+const HOHMANN = {
+  shipAlt: 0.8,    // start radius = Earth radius (2) + this alt => r1 = 2.8
+  segments: 128,   // smoothness of transfer arc
+  moonRate: 2.2,   // must match your sim's moonAngle rate (rad/sec)
+  color: 0x66ccff,
+  dashSize: 0.6,
+  gapSize: 0.4
+};
+
+let transferArc = null;        // THREE.Line (dashed)
+let transferGeom = null;       // geometry for the arc
+let arrivalMarker = null;      // small sphere at expected intercept
+
+function wrapPi(a) {
+  // wrap to (-PI, PI]
+  a = (a + Math.PI) % (2 * Math.PI);
+  if (a < 0) a += 2 * Math.PI;
+  return a - Math.PI;
+}
+function wrap2Pi(a) {
+  // wrap to [0, 2PI)
+  a = a % (2 * Math.PI);
+  return a < 0 ? a + 2 * Math.PI : a;
+}
+
+function ensureTransferPrimitives() {
+  if (!transferArc) {
+    transferGeom = new THREE.BufferGeometry();
+    const positions = new Float32Array((HOHMANN.segments + 1) * 3);
+    transferGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    transferGeom.computeBoundingSphere();
+    const mat = new THREE.LineDashedMaterial({
+      color: HOHMANN.color,
+      dashSize: HOHMANN.dashSize,
+      gapSize: HOHMANN.gapSize,
+      transparent: true,
+      opacity: 0.9
+    });
+    transferArc = new THREE.Line(transferGeom, mat);
+    transferArc.computeLineDistances();
+    scene.add(transferArc);
+
+    // Arrival marker
+    arrivalMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.25, 16, 16),
+      new THREE.MeshBasicMaterial({ color: HOHMANN.color })
+    );
+    scene.add(arrivalMarker);
+  }
+}
+
+/**
+ * Update/draw the Hohmann transfer arc if you launched *now*.
+ * - Treats Earth as the central body, Moon radius r2 from Earth's center
+ * - r1 = Earth radius (2) + HOHMANN.shipAlt
+ * - µ chosen so Moon's mean motion equals your sim's moonRate
+ * - Arc oriented so apolune points to Moon's predicted angle at arrival
+ * Returns some timing telemetry for the UI.
+ */
+function updateHohmannArc() {
+  ensureTransferPrimitives();
+
+  // Earth-centered vectors
+  const earthW = worldPosOf(earth);
+  const moonW  = worldPosOf(moon);
+  const moonEC = moonW.clone().sub(earthW);
+
+  const r2 = moonEC.length();                // ~4 in your sim
+  const r1 = 2 + HOHMANN.shipAlt;            // Earth radius 2 + altitude
+
+  // Ellipse parameters
+  const a = 0.5 * (r1 + r2);
+  const e = (r2 - r1) / (r2 + r1);           // eccentricity
+
+  // Choose µ so Moon's angular rate matches sim:
+  // n_m^2 = µ / r2^3  => µ = n_m^2 * r2^3
+  // scale moonRate by TIME_SCALE so the transfer prediction matches the slowed sim
+  const mu = ((HOHMANN.moonRate * TIME_SCALE) ** 2) * (r2 ** 3);
+
+  // Hohmann time of flight (half the ellipse period)
+  const tof = Math.PI * Math.sqrt((a ** 3) / mu); // seconds in sim-time
+
+  // Moon's **current** angle and predicted arrival angle
+  const thetaMoonNow = Math.atan2(moonEC.z, moonEC.x);
+  const thetaMoonArr = thetaMoonNow + (HOHMANN.moonRate * TIME_SCALE) * tof;
+
+  // Orient ellipse: periapsis angle = arrival - PI (apolune opposite)
+  const thetaPeri = thetaMoonArr - Math.PI;
+  const cosP = Math.cos(thetaPeri), sinP = Math.sin(thetaPeri);
+
+  // Build arc from true anomaly ν = 0..π (periapsis->apolune)
+  const pos = transferGeom.getAttribute('position');
+  for (let i = 0; i <= HOHMANN.segments; i++) {
+    const nu = (i / HOHMANN.segments) * Math.PI; // 0..π
+    const r   = (a * (1 - e * e)) / (1 + e * Math.cos(nu));
+    // local ellipse (periapsis on +x)
+    const lx = r * Math.cos(nu);
+    const lz = r * Math.sin(nu);
+    // rotate into world XZ by thetaPeri, then translate to Earth
+    const wx = earthW.x + (lx * cosP - lz * sinP);
+    const wz = earthW.z + (lx * sinP + lz * cosP);
+    pos.setX(i, wx);
+    pos.setY(i, earthW.y); // planar
+    pos.setZ(i, wz);
+  }
+  pos.needsUpdate = true;
+  transferArc.computeLineDistances();
+
+  // Arrival marker at ν = π
+  const rApo = r2; // equals apoapsis
+  const ax = earthW.x + (rApo * Math.cos(Math.PI) * cosP - rApo * Math.sin(Math.PI) * sinP);
+  const az = earthW.z + (rApo * Math.cos(Math.PI) * sinP + rApo * Math.sin(Math.PI) * cosP);
+  arrivalMarker.position.set(ax, earthW.y, az);
+
+  // Phase-window math (how long until a *perfect* launch window given a fixed launch azimuth)
+  // Choose a fixed launch direction in world XZ (represents a "launch site" azimuth).
+  // Here we use +X; you can later wire this to a UI slider or an Earth longitude.
+  const launchDir = new THREE.Vector3(1, 0, 0);
+  const thetaLaunch = Math.atan2(launchDir.z, launchDir.x);
+
+  // Required phase for Hohmann: φ_req = π - n_moon * TOF
+  const phiReq = Math.PI - (HOHMANN.moonRate * tof);
+  // Current phase between Moon and launch direction
+  const phiNow = wrapPi(thetaMoonNow - thetaLaunch);
+  // Positive wait time until φ_now == φ_req (mod 2π)
+  const wait = wrap2Pi(phiReq - phiNow) / HOHMANN.moonRate;
+
+  return {
+    tof,                          // seconds (sim)
+    phiReq,                       // radians
+    phiNow,                       // radians
+    wait,                         // seconds until next perfect window
+    total: wait + tof             // total time (wait + flight)
+  };
+}
+
 function focusEarth(instant=false) {
   stage = STAGE.EARTH_MOON;
   // Clamp zoom tighter for close work
@@ -188,13 +327,12 @@ function focusEarth(instant=false) {
   controls.maxAzimuthAngle = Infinity;
 
   const target = worldPosOf(earth);
-  // compute a fixed horizontal offset (XZ) from the current camera position so the
-  // camera keeps the same facing direction in world-space as the earth moves.
+  // Compute the fixed horizontal offset (XZ) from current camera->target.
   topdownOffsetXZ.copy(camera.position).sub(target);
   topdownOffsetXZ.y = 0;
-  if (topdownOffsetXZ.length() < 0.001) topdownOffsetXZ.set(0, 0, 40);
+  if (topdownOffsetXZ.lengthSq() < 1e-3) topdownOffsetXZ.set(12, 0, 0); // sensible default
 
-  const destPos = target.clone().add(topdownOffsetXZ).setY(TOPDOWN.height);
+  const destPos = target.clone().add(topdownOffsetXZ).add(new THREE.Vector3(0, TOPDOWN.height, 0));
 
   if (instant) {
     controls.target.copy(target);
@@ -272,9 +410,11 @@ function animate() {
   requestAnimationFrame(animate);
 
   const dt = clock.getDelta();
-  eAngle    += 0.6  * dt;
-  mAngle    += 0.48 * dt;
-  moonAngle += 2.2  * dt;
+  // apply global time scale to orbital motion (keeps mission/tweens at real-time)
+  const simDt = dt * TIME_SCALE;
+  eAngle    += 0.6  * simDt;
+  mAngle    += 0.48 * simDt;
+  moonAngle += 2.2  * simDt;
 
   earthPivot.rotation.y = eAngle;
   marsPivot.rotation.y  = mAngle;
@@ -313,6 +453,16 @@ function animate() {
       : 'Mission complete';
 
     if (u >= 1) mission = null;
+  }
+
+  // --- Live Hohmann transfer (Earth->Moon) ---
+  const ho = updateHohmannArc();
+  if (statusEl) {
+    statusEl.textContent =
+      `Mission ${mission ? 'in progress' : 'idle'} · ` +
+      `Hohmann TOF: ${ho.tof.toFixed(1)}s ` +
+      `· Wait: ${ho.wait.toFixed(1)}s ` +
+      `· Total: ${(ho.total).toFixed(1)}s`;
   }
 
   controls.update();
