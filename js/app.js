@@ -368,8 +368,9 @@ function updateParkingOrbitAndTransfer() {
     const pos = ascentGeom.getAttribute('position');
     const N = ORBIT.ascentSegments;
 
-    // Tangent to the parking circle at entry (prograde)
-    const t_hat = new THREE.Vector3(0,1,0).cross(entryDir).normalize();
+  // Tangent to the parking circle at entry (prograde).
+  // Use entryDir x up so the tangent points in the direction of motion (prograde).
+  const t_hat = entryDir.clone().cross(new THREE.Vector3(0,1,0)).normalize();
 
     // Use a smooth "pitch-over" curve: cubic Bézier from pStart → pEntry
     // Controls pull along the tangent so it bends into the orbit
