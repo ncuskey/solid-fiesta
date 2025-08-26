@@ -1,9 +1,4 @@
-// Ensure Three.js is available
-if (typeof THREE === 'undefined') {
-  console.error('Three.js not loaded. Ensure the CDN script is present and runs before app.js.');
-  // Stop execution to avoid noisy errors
-  throw new Error('Three.js is required');
-}
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
 
 // Scene, Camera, Renderer
 const scene = new THREE.Scene();
