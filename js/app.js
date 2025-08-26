@@ -78,7 +78,7 @@ const PERIOD = {
 
 // ===== Parking orbit + transfer config =====
 const ORBIT = {
-  rPark: 3.0,           // parking orbit radius from Earth's center (Earth radius is 2)
+  rPark: 4.0,           // 2 × Earth radius (Earth radius is 2 in the scene)
   segments: 96,         // smoothness for circle/arc drawing
   ascentSegments: 24,   // ascent polyline resolution
   orbitColor: 0xffffff, // wait arc color
@@ -282,88 +282,82 @@ function ensureTrajectoryPrimitives() {
 }
 
 // Parking orbit + transfer solver called every frame
+// === WORK-BACKWARDS: ascent (fixed), parking (variable), transfer (fixed endpoints) ===
 function updateParkingOrbitAndTransfer() {
   ensureTrajectoryPrimitives();
 
-  // Earth/Moon state now
+  // State "now"
   const earthW = worldPosOf(earth);
   const w      = currentAngularRates();
   const n_spinE = (TAU / SIDEREAL_DAY) * (TIME.daysPerSecond * TIME.multiplier);
+  const n_moon  = w.moon;
 
-  // Earth site angle NOW (inertial, about +Y)
-  const thetaE_now = Math.atan2(
-    (earthSiteLocal.clone().applyAxisAngle(new THREE.Vector3(0,1,0), earth.rotation.y)).z,
-    (earthSiteLocal.clone().applyAxisAngle(new THREE.Vector3(0,1,0), earth.rotation.y)).x
-  );
+  // Earth site inertial angle NOW (about +Y)
+  const earthSiteNowLocalRot = earthSite.position.clone().applyAxisAngle(new THREE.Vector3(0,1,0), earth.rotation.y);
+  const thetaE_now = angleXZ(earthSiteNowLocalRot);
 
   // Moon site vector NOW from Earth's center, and its angle
   const moonOrbitLocal = moon.position.clone(); // ~ (4,0,0)
-  const moonSiteNowEC  = new THREE.Vector3().copy(moonOrbitLocal).add(moonSiteLocal)
-                           .applyAxisAngle(new THREE.Vector3(0,1,0), moonPivot.rotation.y);
-  const thetaM_now = Math.atan2(moonSiteNowEC.z, moonSiteNowEC.x);
+  const moonSiteLocal2  = moonSite.position.clone();
+  const moonSiteNowEC  = rotY(moonOrbitLocal.clone().add(moonSiteLocal2), moonPivot.rotation.y);
+  const thetaM_now     = angleXZ(moonSiteNowEC);
 
-  // Choose Earth-centered mu so the Moon's mean motion matches the sim
+  // Earth-centered mu chosen to match lunar mean motion at rMoonCenter
+  const r1 = ORBIT.rPark;
   const rMoonCenter = moon.position.length();
-  const n_moon = w.moon;
   const mu = (n_moon*n_moon) * (rMoonCenter**3);
 
-  // Parking orbit mean motion
-  const r1 = ORBIT.rPark;
+  // Parking mean motion
   const n_park = Math.sqrt(mu / (r1*r1*r1));
 
-  // Ascent duration (sim) — short but non-zero; tweak to taste
-  const ascentDays = 0.02; // ~29 min of sim-time
+  // Simple (short) ascent time (real seconds); tweak if you like
+  const ascentDays = 0.02;           // ~29 minutes of sim-time
   const t_ascent   = ascentDays / (TIME.daysPerSecond); // real seconds
 
-  // First guess: r2 using "now"
-  let r2_guess = moonSiteNowEC.length();
-  function hohmannTOF(r1, r2){ const a=0.5*(r1+r2); return Math.PI*Math.sqrt((a*a*a)/mu); }
-  let tof = hohmannTOF(r1, r2_guess); // real seconds
+  // ---- Work backwards: iterate to self-consistent {wait, tof, burn-peri axis} ----
+  // Start with a guess: assume arrival happens if we burned "soon" along current geometry
+  let wait = 0, tof = hohmannTOF(r1, moonSiteNowEC.length(), mu);
 
-  // Iterate a few times to settle on consistent wait and TOF
-  let wait = 0;
   for (let iter=0; iter<3; iter++) {
-    // Predict arrival angle with current guess
+    // Predict the Moon site angle at arrival
     const thetaM_arr = thetaM_now + n_moon * (t_ascent + wait + tof);
 
-    // Burn direction must be opposite arrival direction (peri→apo)
-    const uDir = new THREE.Vector3(Math.cos(thetaM_arr+Math.PI), 0, Math.sin(thetaM_arr+Math.PI)); // unit in XZ
-    // Parking plane basis {u,v} (XZ plane since everything orbits in XZ)
-    const u = uDir.clone(); // periapsis direction (burn)
-    const v = new THREE.Vector3(0,1,0).cross(u).normalize(); // points 90° ahead in plane
+    // Burn (periapsis) direction must be opposite the arrival direction
+    //   u = -normalize( MoonSite_EC(theta_arr) ) projected in XZ plane
+    const r2VecArr   = rotY(moonOrbitLocal.clone().add(moonSiteLocal2), thetaM_arr);
+    const uVec       = new THREE.Vector3(r2VecArr.x, 0, r2VecArr.z).normalize().multiplyScalar(-1);
+    const theta_burn = angleXZ(uVec);
 
-    // Earth site angle at orbital insertion (after ascent)
-    const thetaE_entry = thetaE_now + n_spinE * t_ascent;
+    // Entry angle: Earth site after ascent
+    const theta_entry = thetaE_now + n_spinE * t_ascent;
 
-    // Express entry direction in the parking plane basis
-    const entryDir = new THREE.Vector3(Math.cos(thetaE_entry), 0, Math.sin(thetaE_entry)); // XZ
-    const entryAng = Math.atan2(entryDir.dot(v), entryDir.dot(u)); // angle on the orbit
+    // Required positive rotation along circular parking to reach burn
+    const dPhi = wrap2Pi(theta_burn - theta_entry);
 
-    // We need to rotate from entryAng → 0 (burn at +u). Positive (ccw) arc length:
-    const dPhi = wrap2Pi(0 - entryAng);
-    wait = dPhi / n_park; // real seconds
+    // Wait along parking orbit (real seconds)
+    wait = dPhi / n_park;
 
-    // With this wait, recompute arrival vector and TOF using actual r2 at arrival
+    // With this wait, recompute arrival vector magnitude and refine TOF
     const thetaM_arr2 = thetaM_now + n_moon * (t_ascent + wait + tof);
-    const r2VecArr    = new THREE.Vector3().copy(moonOrbitLocal).add(moonSiteLocal)
-                           .applyAxisAngle(new THREE.Vector3(0,1,0), thetaM_arr2);
-    const r2          = r2VecArr.length();
-    tof = hohmannTOF(r1, r2);
+    const r2VecArr2   = rotY(moonOrbitLocal.clone().add(moonSiteLocal2), thetaM_arr2);
+    const r2          = r2VecArr2.length();
+    tof = hohmannTOF(r1, r2, mu);
   }
 
-  // Final burn & arrival geometry
+  // Final arrival and burn geometry
   const thetaM_arr_final = thetaM_now + n_moon * (t_ascent + wait + tof);
-  const u = new THREE.Vector3(Math.cos(thetaM_arr_final+Math.PI), 0, Math.sin(thetaM_arr_final+Math.PI));
-  const v = new THREE.Vector3(0,1,0).cross(u).normalize();
+  const r2VecArr_final   = rotY(moonOrbitLocal.clone().add(moonSiteLocal2), thetaM_arr_final);
+  const r2               = r2VecArr_final.length();
 
-  // --- 1) Transfer ellipse (peri along +u, apo at -u with r2 at arrival) ---
-  const r2VecArr = new THREE.Vector3().copy(moonOrbitLocal).add(moonSiteLocal)
-                     .applyAxisAngle(new THREE.Vector3(0,1,0), thetaM_arr_final);
-  const r2 = r2VecArr.length();
-  const a = 0.5*(r1 + r2);
-  const e = (r2 - r1)/(r2 + r1);
+  // Periapsis unit (burn) and in-plane basis
+  const u = new THREE.Vector3(r2VecArr_final.x, 0, r2VecArr_final.z).normalize().multiplyScalar(-1); // +u = peri
+  const v = new THREE.Vector3(0,1,0).cross(u).normalize();                                           // 90° ahead
 
+  // --- 1) TRANSFER ellipse (fixed endpoints this frame) ---
   {
+    const a = 0.5*(r1 + r2);
+    const e = (r2 - r1) / (r2 + r1);
+
     const pos = transferGeom2.getAttribute('position');
     const N = 128;
     for (let i=0;i<=N;i++){
@@ -373,9 +367,9 @@ function updateParkingOrbitAndTransfer() {
       const p = earthW.clone().add(dir.multiplyScalar(r));
       pos.setXYZ(i, p.x, p.y, p.z);
     }
-    // Pin endpoints
+    // Pin endpoints EXACTLY: start at burn periapsis, end at moon site at arrival
     const pBurn   = earthW.clone().add(u.clone().multiplyScalar(r1));
-    const pArrive = earthW.clone().add(r2VecArr);
+    const pArrive = earthW.clone().add(r2VecArr_final);
     pos.setXYZ(0,   pBurn.x,   pBurn.y,   pBurn.z);
     pos.setXYZ(N,   pArrive.x, pArrive.y, pArrive.z);
     pos.needsUpdate = true;
@@ -383,14 +377,22 @@ function updateParkingOrbitAndTransfer() {
     arrivalMarker2.position.copy(pArrive);
   }
 
-  // --- 2) Parking-orbit WAIT arc: from entry angle to 0 along + direction ---
+  // --- 2) PARKING-ORBIT arc (variable length only) ---
   {
     const pos = waitArcGeom.getAttribute('position');
     const N = ORBIT.segments;
-    const entryAng = wrap2Pi(-n_park * wait); // since entry → (entry + n_park*wait) == 0
+
+    // Entry angle: Earth site after ascent; Burn at theta_burn (φ=0 in {u,v} basis)
+    const theta_entry = thetaE_now + n_spinE * t_ascent;
+
+    // Convert entry direction into the {u,v} basis (so φ=0 is burn)
+    const entryDir = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));
+    const entryAng = Math.atan2(entryDir.dot(v), entryDir.dot(u)); // angle on the circle
+
+    const dPhi = wrap2Pi(0 - entryAng); // sweep from entry to burn
     for (let i=0;i<=N;i++){
       const t = i/N;
-      const φ = wrap2Pi(entryAng + t*(wrap2Pi(0 - entryAng)));
+      const φ = entryAng + t*dPhi;
       const dir = u.clone().multiplyScalar(Math.cos(φ)).add(v.clone().multiplyScalar(Math.sin(φ)));
       const p = earthW.clone().add(dir.multiplyScalar(r1));
       pos.setXYZ(i, p.x, p.y, p.z);
@@ -398,28 +400,29 @@ function updateParkingOrbitAndTransfer() {
     pos.needsUpdate = true;
   }
 
-  // --- 3) Ascent path: straight or slight curve from current site (now) to entry point ---
+  // --- 3) ASCENT arc (fixed relative to Earth) ---
   {
-    const entryAng = wrap2Pi(-n_park * wait);
-    const entryDir = u.clone().multiplyScalar(Math.cos(entryAng)).add(v.clone().multiplyScalar(Math.sin(entryAng)));
-    const pEntry   = earthW.clone().add(entryDir.multiplyScalar(r1));
+    // Entry point (start of parking circle) is the site radial after ascent
+    const theta_entry = thetaE_now + n_spinE * t_ascent;
+    const entryDir = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));
+    const pEntry   = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
 
     const pStart   = worldPosOf(earthSite); // site now
     const pos = ascentGeom.getAttribute('position');
     const N = ORBIT.ascentSegments;
     for (let i=0;i<=N;i++){
       const t = i/N;
-      // simple eased lerp; you can fancy this into a bezier if you like
-      const s = t*t*(3-2*t);
-      const x = pStart.x + (pEntry.x - pStart.x)*s;
-      const y = pStart.y + (pEntry.y - pStart.y)*s;
-      const z = pStart.z + (pEntry.z - pStart.z)*s;
-      pos.setXYZ(i, x,y,z);
+      const s = t*t*(3-2*t); // smoothstep
+      pos.setXYZ(i,
+        THREE.MathUtils.lerp(pStart.x, pEntry.x, s),
+        THREE.MathUtils.lerp(pStart.y, pEntry.y, s),
+        THREE.MathUtils.lerp(pStart.z, pEntry.z, s)
+      );
     }
     pos.needsUpdate = true;
   }
 
-  // Telemetry (in sim-days)
+  // Telemetry (sim-days)
   return {
     waitDays: wait * TIME.daysPerSecond,
     tofDays:  tof  * TIME.daysPerSecond,
