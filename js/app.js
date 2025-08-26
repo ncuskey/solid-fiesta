@@ -367,14 +367,25 @@ function updateParkingOrbitAndTransfer() {
     const pStart   = worldPosOf(earthSite); // site now
     const pos = ascentGeom.getAttribute('position');
     const N = ORBIT.ascentSegments;
+
+    // Tangent to the parking circle at entry (prograde)
+    const t_hat = new THREE.Vector3(0,1,0).cross(entryDir).normalize();
+
+    // Use a smooth "pitch-over" curve: cubic Bézier from pStart → pEntry
+    // Controls pull along the tangent so it bends into the orbit
+    const r0 = pStart.clone().sub(earthW).length();      // ~ Earth radius
+    const bend = 0.55 * (r1 - r0);                       // how hard to pitch over
+    const c1 = pStart.clone().add(t_hat.clone().multiplyScalar(bend));
+    const c2 = pEntry.clone().sub(t_hat.clone().multiplyScalar(bend));
+
     for (let i=0;i<=N;i++){
       const t = i/N;
-      const s = t*t*(3-2*t); // smoothstep
-      pos.setXYZ(i,
-        THREE.MathUtils.lerp(pStart.x, pEntry.x, s),
-        THREE.MathUtils.lerp(pStart.y, pEntry.y, s),
-        THREE.MathUtils.lerp(pStart.z, pEntry.z, s)
-      );
+      const u = 1 - t;
+      // cubic Bézier blending
+      const Bx = u*u*u*pStart.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*pEntry.x;
+      const By = u*u*u*pStart.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*pEntry.y;
+      const Bz = u*u*u*pStart.z + 3*u*u*t*c1.z + 3*u*t*t*c2.z + t*t*t*pEntry.z;
+      pos.setXYZ(i, Bx, By, Bz);
     }
     pos.needsUpdate = true;
   }
