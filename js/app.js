@@ -310,8 +310,20 @@ function updateParkingOrbitAndTransfer() {
   const u = new THREE.Vector3(r2VecArr_final.x, 0, r2VecArr_final.z).normalize().multiplyScalar(-1); // +u = peri
   const v = new THREE.Vector3(0,1,0).cross(u).normalize();                                           // 90° ahead
 
-  // --- 1) TRANSFER ellipse (fixed endpoints this frame) ---
+  // --- 1) TRANSFER ellipse (anchored to Moon site + Earth parking burn) ---
   {
+    // Arrival point is the actual Moon landing site *right now* (anchored to the orange dot).
+    // This keeps the transfer visually glued to the marker; only the parking arc length changes.
+    const pArrive = worldPosOf(moonSite);
+    const r2 = pArrive.clone().sub(earthW).length();
+
+    // Periapsis (burn) direction: opposite the Moon site direction, flattened to the ecliptic
+    const u = pArrive.clone().sub(earthW).setY(0).normalize().multiplyScalar(-1); // periapsis radial
+    const v = new THREE.Vector3(0,1,0).cross(u).normalize();                       // 90° ahead in-plane
+
+    // Save u,v for the parking-arc section below
+    const uvForParking = { u, v };
+
     const a = 0.5*(r1 + r2);
     const e = (r2 - r1) / (r2 + r1);
 
@@ -324,14 +336,16 @@ function updateParkingOrbitAndTransfer() {
       const p = earthW.clone().add(dir.multiplyScalar(r));
       pos.setXYZ(i, p.x, p.y, p.z);
     }
-    // Pin endpoints EXACTLY: start at burn periapsis, end at moon site at arrival
-    const pBurn   = earthW.clone().add(u.clone().multiplyScalar(r1));
-    const pArrive = earthW.clone().add(r2VecArr_final);
-    pos.setXYZ(0,   pBurn.x,   pBurn.y,   pBurn.z);
-    pos.setXYZ(N,   pArrive.x, pArrive.y, pArrive.z);
+    // Pin endpoints EXACTLY
+    const pBurn = earthW.clone().add(u.clone().multiplyScalar(r1));
+    pos.setXYZ(0, pBurn.x, pBurn.y, pBurn.z);
+    pos.setXYZ(N, pArrive.x, pArrive.y, pArrive.z);
     pos.needsUpdate = true;
     transferLine.computeLineDistances();
     arrivalMarker2.position.copy(pArrive);
+
+    // Stash u,v on the function scope so the parking-arc block can use them
+    updateParkingOrbitAndTransfer._uv = uvForParking;
   }
 
   // --- 2) PARKING-ORBIT arc (variable length only) ---
@@ -339,8 +353,11 @@ function updateParkingOrbitAndTransfer() {
     const pos = waitArcGeom.getAttribute('position');
     const N = ORBIT.segments;
 
-    // Entry angle: Earth site after ascent; Burn at theta_burn (φ=0 in {u,v} basis)
+    // Entry angle: Earth site after ascent; Burn at φ=0 in {u,v} basis
     const theta_entry = thetaE_now + n_spinE * t_ascent;
+
+    // Use the u,v from the transfer block (burn direction = +u)
+    const { u, v } = updateParkingOrbitAndTransfer._uv || { u: new THREE.Vector3(1,0,0), v: new THREE.Vector3(0,0,1) };
 
     // Convert entry direction into the {u,v} basis (so φ=0 is burn)
     const entryDir = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));
