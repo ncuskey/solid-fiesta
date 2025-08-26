@@ -21,6 +21,11 @@ controls.enableDamping = true;
 controls.minDistance = 4;
 controls.maxDistance = 40;
 
+// TOPDOWN follow constants for top-down Earth–Moon camera
+const TOPDOWN = { height: 22, targetLerp: 0.30, camLerp: 0.18, polarMax: 0.35 };
+// horizontal offset (XZ) to keep camera facing a fixed world direction while following Earth
+let topdownOffsetXZ = new THREE.Vector3(0, 0, 0);
+
 // ---------- Lights ----------
 scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 const pointLight = new THREE.PointLight(0xffffff, 1.2);
@@ -48,9 +53,11 @@ function addStars(count = 1500, spread = 900) {
   }
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const m = new THREE.PointsMaterial({ size: 0.8, sizeAttenuation: true, color: 0xffffff });
-  scene.add(new THREE.Points(g, m));
+  const pts = new THREE.Points(g, m);
+  scene.add(pts);
+  return pts;
 }
-addStars();
+const starfield = addStars();
 
 // ---------- Pivots & Planets ----------
 const solarPivot = new THREE.Object3D(); // Sun at origin
@@ -174,10 +181,20 @@ function focusEarth(instant=false) {
   controls.minDistance = 4;
   controls.maxDistance = 40;
 
+  // clamp polar to top-down and allow free azimuth
+  controls.minPolarAngle = 0;
+  controls.maxPolarAngle = TOPDOWN.polarMax;
+  controls.minAzimuthAngle = -Infinity;
+  controls.maxAzimuthAngle = Infinity;
+
   const target = worldPosOf(earth);
-  const dir = niceDir();
-  const distance = 18;
-  const destPos = target.clone().add(dir.multiplyScalar(distance));
+  // compute a fixed horizontal offset (XZ) from the current camera position so the
+  // camera keeps the same facing direction in world-space as the earth moves.
+  topdownOffsetXZ.copy(camera.position).sub(target);
+  topdownOffsetXZ.y = 0;
+  if (topdownOffsetXZ.length() < 0.001) topdownOffsetXZ.set(0, 0, 40);
+
+  const destPos = target.clone().add(topdownOffsetXZ).setY(TOPDOWN.height);
 
   if (instant) {
     controls.target.copy(target);
@@ -199,11 +216,27 @@ function focusInnerSystem() {
   controls.minDistance = 40;
   controls.maxDistance = 300;
 
+  // restore near-full polar freedom and allow free azimuth
+  controls.minPolarAngle = 0.01;
+  controls.maxPolarAngle = Math.PI - 0.01;
+  controls.minAzimuthAngle = -Infinity;
+  controls.maxAzimuthAngle = Infinity;
+
   const target = new THREE.Vector3(0, 0, 0); // Sun/system center
+  // compute current azimuth around Y so we keep a similar heading when tilting
   const currentDir = camera.position.clone().sub(controls.target).normalize();
   if (!isFinite(currentDir.length())) currentDir.copy(niceDir());
+  const azimuth = Math.atan2(currentDir.z, currentDir.x);
+  const polar = Math.PI / 6; // 30 degree tilt above the ecliptic
+  const cosP = Math.cos(polar);
+  // new direction expressed with given polar and azimuth (y = sin(polar))
+  const newDir = new THREE.Vector3(
+    cosP * Math.cos(azimuth),
+    Math.sin(polar),
+    cosP * Math.sin(azimuth)
+  ).normalize();
   const distance = 140;
-  const destPos = target.clone().add(currentDir.multiplyScalar(distance));
+  const destPos = target.clone().add(newDir.multiplyScalar(distance));
 
   startCameraTween({
     fromPos: camera.position,
@@ -256,11 +289,18 @@ function animate() {
     if (u >= 1) camTween = null;
   }
 
-  // While in Earth-Moon stage and not tweening, follow Earth smoothly
+  // While in Earth-Moon stage and not tweening, TOPDOWN follow of Earth
   if (stage === STAGE.EARTH_MOON && !camTween) {
-    controls.target.lerp(worldPosOf(earth), 0.15);
+    const target = worldPosOf(earth);
+    controls.target.lerp(target, TOPDOWN.targetLerp);
+    // desired camera position keeps the same XZ offset from Earth so the
+    // camera's facing direction in world-space is constant as Earth orbits.
+    const desiredPos = target.clone().add(topdownOffsetXZ).setY(TOPDOWN.height);
+    camera.position.lerp(desiredPos, TOPDOWN.camLerp);
   }
-
+  // Ensure starfield is world-anchored so it rotates naturally as the system moves
+  if (typeof starfield !== 'undefined') starfield.position.set(0,0,0);
+  
   // Mission update
   if (mission) {
     const elapsed = performance.now() - mission.start;
