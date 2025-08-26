@@ -16,27 +16,43 @@ camera.position.set(0, 50, 150);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
+import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
+
+// ---------- Scene / Camera / Renderer ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+camera.position.set(0, 50, 150);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
 document.getElementById('game-container').appendChild(renderer.domElement);
 
-// Orbit controls (drag to look around)
+// ---------- Controls ----------
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-// Lighting
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-scene.add(ambientLight);
+// start focused on Earth-Moon with tighter zoom
+controls.minDistance = 4;
+controls.maxDistance = 40;
 
+// ---------- Lights ----------
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 const pointLight = new THREE.PointLight(0xffffff, 1.2);
 pointLight.position.set(0, 0, 0);
 scene.add(pointLight);
 
-// Sun
-const sunGeometry = new THREE.SphereGeometry(8, 32, 32);
-const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xffcc00 });
-const sun = new THREE.Mesh(sunGeometry, sunMaterial);
+// ---------- Sun ----------
+const sun = new THREE.Mesh(
+  new THREE.SphereGeometry(8, 32, 32),
+  new THREE.MeshBasicMaterial({ color: 0xffcc00 })
+);
 scene.add(sun);
 
-// Quick starfield
+// ---------- Starfield ----------
 function addStars(count = 1500, spread = 900) {
   const g = new THREE.BufferGeometry();
   const pos = new Float32Array(count * 3);
@@ -54,28 +70,28 @@ function addStars(count = 1500, spread = 900) {
 }
 addStars();
 
-// Pivots to allow nested orbits
-const solarPivot = new THREE.Object3D(); // center pivot (Sun at origin)
+// ---------- Pivots & Planets ----------
+const solarPivot = new THREE.Object3D(); // Sun at origin
 scene.add(solarPivot);
 
-const earthPivot = new THREE.Object3D(); // rotates around sun
+const earthPivot = new THREE.Object3D();
 solarPivot.add(earthPivot);
 
 const earth = new THREE.Mesh(
   new THREE.SphereGeometry(2, 32, 32),
   new THREE.MeshStandardMaterial({ color: 0x3366ff })
 );
-earth.position.set(30, 0, 0); // distance from sun
+earth.position.set(30, 0, 0);
 earthPivot.add(earth);
 
-const moonPivot = new THREE.Object3D(); // rotates around earth
+const moonPivot = new THREE.Object3D();
 earth.add(moonPivot);
 
 const moon = new THREE.Mesh(
   new THREE.SphereGeometry(0.5, 32, 32),
   new THREE.MeshStandardMaterial({ color: 0xcccccc })
 );
-moon.position.set(4, 0, 0); // distance from earth
+moon.position.set(4, 0, 0);
 moonPivot.add(moon);
 
 const marsPivot = new THREE.Object3D();
@@ -85,49 +101,41 @@ const mars = new THREE.Mesh(
   new THREE.SphereGeometry(1.5, 32, 32),
   new THREE.MeshStandardMaterial({ color: 0xff3300 })
 );
-mars.position.set(50, 0, 0); // distance from sun
+mars.position.set(50, 0, 0);
 marsPivot.add(mars);
 
-// Orbit rings helper
+// ---------- Orbit rings ----------
 function addOrbit(radius, color=0x444444, segments=128) {
   const pos = new Float32Array((segments+1) * 3);
-  for (let i=0;i<=segments;i++){
-    const t = (i/segments) * Math.PI * 2;
+  for (let i = 0; i <= segments; i++) {
+    const t = (i / segments) * Math.PI * 2;
     pos[i*3+0] = Math.cos(t) * radius;
     pos[i*3+1] = 0;
     pos[i*3+2] = Math.sin(t) * radius;
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const mat = new THREE.LineBasicMaterial({ color, transparent:true, opacity:0.6 });
+  const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.6 });
   const loop = new THREE.LineLoop(geo, mat);
   scene.add(loop);
 }
-
-// Add orbit rings
-addOrbit(30);     // Earth around Sun
-addOrbit(50);     // Mars around Sun
-// Moon ring around Earth
-(function addMoonRing(){
+addOrbit(30); // Earth
+addOrbit(50); // Mars
+// Moon ring (local to Earth)
+{
   const ring = new THREE.RingGeometry(3.9, 4.1, 64);
   const mat  = new THREE.MeshBasicMaterial({ color: 0x444444, side: THREE.DoubleSide, transparent:true, opacity:0.4 });
   const mesh = new THREE.Mesh(ring, mat);
   mesh.rotation.x = Math.PI/2;
   earth.add(mesh);
-})();
-
-// Resize handling
-function onResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
 }
-window.addEventListener('resize', onResize);
 
-// Basic UI references (stub)
+// ---------- UI ----------
 const launchBtn = document.getElementById('launch-btn');
-const statusEl = document.getElementById('status');
-// --- Ship & mission state ---
+const upgradeBtn = document.getElementById('upgrade-btn');
+const statusEl   = document.getElementById('status');
+
+// ---------- Ship / mission ----------
 const ship = new THREE.Mesh(
   new THREE.SphereGeometry(0.35, 16, 16),
   new THREE.MeshBasicMaterial({ color: 0xffffff })
@@ -144,10 +152,10 @@ function worldPosOf(obj) {
 
 launchBtn?.addEventListener('click', () => {
   const startPos = worldPosOf(earth);
-  const endPos   = worldPosOf(mars); // freeze arrival point at launch
+  const endPos   = worldPosOf(mars); // sample at launch
   mission = {
     start: performance.now(),
-    duration: 30000,   // 30s “flight” demo
+    duration: 30000, // 30s demo
     startPos, endPos
   };
   ship.position.copy(startPos);
@@ -155,23 +163,121 @@ launchBtn?.addEventListener('click', () => {
   statusEl.textContent = 'Launching ship from Earth to Mars...';
 });
 
-// Animation loop
-// Frame-rate independent animation using clock
+// ---------- Camera Stages & Tweens ----------
+const STAGE = { EARTH_MOON: 0, INNER_SYSTEM: 1 };
+let stage = STAGE.EARTH_MOON;
+
+let camTween = null; // {t0, dur, startPos, endPos, startTarget, endTarget}
+function easeInOutCubic(u){ return u < 0.5 ? 4*u*u*u : 1 - Math.pow(-2*u + 2, 3)/2; }
+
+function startCameraTween({ fromPos, toPos, fromTarget, toTarget, duration = 1200 }) {
+  camTween = {
+    t0: performance.now(),
+    dur: duration,
+    startPos: fromPos.clone(),
+    endPos: toPos.clone(),
+    startTarget: fromTarget.clone(),
+    endTarget: toTarget.clone()
+  };
+}
+
+function niceDir() {
+  // pleasant angle above the ecliptic
+  return new THREE.Vector3(0.4, 0.35, 0.85).normalize();
+}
+
+function focusEarth(instant=false) {
+  stage = STAGE.EARTH_MOON;
+  // Clamp zoom tighter for close work
+  controls.minDistance = 4;
+  controls.maxDistance = 40;
+
+  const target = worldPosOf(earth);
+  const dir = niceDir();
+  const distance = 18;
+  const destPos = target.clone().add(dir.multiplyScalar(distance));
+
+  if (instant) {
+    controls.target.copy(target);
+    camera.position.copy(destPos);
+    return;
+  }
+  startCameraTween({
+    fromPos: camera.position,
+    toPos: destPos,
+    fromTarget: controls.target,
+    toTarget: target,
+    duration: 1200
+  });
+}
+
+function focusInnerSystem() {
+  stage = STAGE.INNER_SYSTEM;
+  // Wider zoom range
+  controls.minDistance = 40;
+  controls.maxDistance = 300;
+
+  const target = new THREE.Vector3(0, 0, 0); // Sun/system center
+  const currentDir = camera.position.clone().sub(controls.target).normalize();
+  if (!isFinite(currentDir.length())) currentDir.copy(niceDir());
+  const distance = 140;
+  const destPos = target.clone().add(currentDir.multiplyScalar(distance));
+
+  startCameraTween({
+    fromPos: camera.position,
+    toPos: destPos,
+    fromTarget: controls.target,
+    toTarget: target,
+    duration: 1200
+  });
+}
+
+// button to simulate upgrade unlock
+upgradeBtn?.addEventListener('click', () => {
+  statusEl.textContent = 'Upgrade acquired: Interplanetary Navigation';
+  focusInnerSystem();
+});
+
+// Initial focus on Earth–Moon
+focusEarth(true);
+
+// ---------- Resize ----------
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+// ---------- Animate ----------
 const clock = new THREE.Clock();
 let eAngle = 0, mAngle = 0, moonAngle = 0;
 
 function animate() {
   requestAnimationFrame(animate);
 
-  const dt = clock.getDelta(); // seconds
-  // radians/sec-ish “game speeds”
-  eAngle   += 0.6  * dt;
-  mAngle   += 0.48 * dt;
-  moonAngle+= 2.2  * dt;
+  const dt = clock.getDelta();
+  eAngle    += 0.6  * dt;
+  mAngle    += 0.48 * dt;
+  moonAngle += 2.2  * dt;
 
   earthPivot.rotation.y = eAngle;
   marsPivot.rotation.y  = mAngle;
   moonPivot.rotation.y  = moonAngle;
+
+  // Camera tween update
+  if (camTween) {
+    const u = Math.min((performance.now() - camTween.t0) / camTween.dur, 1);
+    const s = easeInOutCubic(u);
+    controls.target.copy(camTween.startTarget.clone().lerp(camTween.endTarget, s));
+    camera.position.copy(camTween.startPos.clone().lerp(camTween.endPos, s));
+    if (u >= 1) camTween = null;
+  }
+
+  // While in Earth-Moon stage and not tweening, follow Earth smoothly
+  if (stage === STAGE.EARTH_MOON && !camTween) {
+    controls.target.lerp(worldPosOf(earth), 0.15);
+  }
 
   // Mission update
   if (mission) {
@@ -180,12 +286,11 @@ function animate() {
     const s = u * u * (3 - 2 * u);
     ship.position.lerpVectors(mission.startPos, mission.endPos, s);
 
-    if (u < 1) {
-      statusEl.textContent = `Mission in progress: ${(u * 100).toFixed(0)}%`;
-    } else {
-      statusEl.textContent = 'Mission complete';
-      mission = null;
-    }
+    statusEl.textContent = u < 1
+      ? `Mission in progress: ${(u * 100).toFixed(0)}%`
+      : 'Mission complete';
+
+    if (u >= 1) mission = null;
   }
 
   controls.update();
