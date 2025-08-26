@@ -61,6 +61,20 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.07;
 controls.minDistance = 4;
 controls.maxDistance = 300;
+// --- Sun + Lights (makes the colored materials actually visible) ---
+const sun = new THREE.Mesh(
+  new THREE.SphereGeometry(6, 32, 32),
+  new THREE.MeshBasicMaterial({ color: 0xffcc00 }) // self-lit "glow"
+);
+sun.position.set(0, 0, 0);
+scene.add(sun);
+
+const ambient = new THREE.AmbientLight(0xffffff, 0.25);
+scene.add(ambient);
+
+// Bright point light at the Sun so Earth/Moon/Mars shade nicely
+const sunLight = new THREE.PointLight(0xffffff, 2.0, 0, 2); // (color, intensity, distance=∞, decay)
+sun.add(sunLight);
 // topdown follow helpers
 const TOPDOWN = { height: 40, polarMax: Math.PI * 0.2, targetLerp: 0.15, camLerp: 0.09 };
 const topdownOffsetXZ = new THREE.Vector3(12, 0, 0);
