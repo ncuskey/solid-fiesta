@@ -43,3 +43,24 @@ button {
 button:hover {
   background: rgba(255,255,255,0.16);
 }
+
+.speed-control {
+  margin-top: 10px;
+}
+.speed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.speed-btn {
+  width: 36px;
+  height: 32px;
+  padding: 0;
+  font-size: 18px;
+}
+#speed-value {
+  min-width: 44px;
+  text-align: center;
+  display: inline-block;
+}

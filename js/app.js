@@ -113,6 +113,24 @@ const MOON_SITE  = { latDeg: 0.67,  lonDeg: 23.47,  radius: 0.5 }; // Tranquilit
 // ---------- UI elements (DOM) ----------
 const launchBtn = document.getElementById('launch-btn');
 const upgradeBtn = document.getElementById('upgrade-btn');
+const speedMinusBtn = document.getElementById('speed-minus');
+const speedPlusBtn  = document.getElementById('speed-plus');
+const speedValueEl  = document.getElementById('speed-value');
+
+// Helper to set simulation speed (daysPerSecond) with clamping and UI update
+function setSimSpeed(v) {
+  // clamp between 0.0 and 5.0 days/sec for sanity
+  const clamped = Math.max(0.0, Math.min(5.0, Math.round(v * 10) / 10));
+  TIME.daysPerSecond = clamped;
+  if (speedValueEl) speedValueEl.textContent = clamped.toFixed(1);
+}
+
+// Wire buttons (change by 0.1 increments)
+speedMinusBtn?.addEventListener('click', () => setSimSpeed((TIME.daysPerSecond || 0) - 0.1));
+speedPlusBtn?.addEventListener('click',  () => setSimSpeed((TIME.daysPerSecond || 0) + 0.1));
+
+// Initialize display
+setSimSpeed(TIME.daysPerSecond);
 
 // Minimal solar system pivots and Earth mesh (created early so later code can reference them)
 const solarPivot = new THREE.Object3D();
