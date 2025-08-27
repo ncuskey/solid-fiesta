@@ -127,7 +127,7 @@ const moon = new THREE.Mesh(
   new THREE.SphereGeometry(0.5, 32, 32),
   new THREE.MeshStandardMaterial({ color: 0xcccccc })
 );
-moon.position.set(4, 0, 0);
+moon.position.set(8, 0, 0); // move Moon to 8 (well outside the parking orbit at 4)
 moonPivot.add(moon);
 
 // --- Earth launch site marker ---
