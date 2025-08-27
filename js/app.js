@@ -23,9 +23,9 @@ const TRANSFER = {
   gapSize: 0.4
 };
 
-// Launch insertion lead: advance this many degrees downrange from the site
-const LAUNCH = { leadDeg: 15 }; // advance ~15° along the parking orbit at insertion
-const LAUNCH_LEAD = THREE.MathUtils.degToRad(LAUNCH.leadDeg);
+// Launch insertion lead: positive means CCW (prograde)
+const LAUNCH_LEAD_DEG = 15; // positive means CCW (prograde)
+const LAUNCH_LEAD = THREE.MathUtils.degToRad(LAUNCH_LEAD_DEG);
 
 // UI/status and mission placeholders
 const statusEl = document.getElementById('status');
@@ -357,54 +357,58 @@ function updateParkingOrbitAndTransfer() {
     const pos = waitArcGeom.getAttribute('position');
     const N = ORBIT.segments;
 
-    // Entry = site azimuth after ascent + optional downrange lead
-    const theta_entry = thetaE_now + n_spinE * t_ascent + LAUNCH_LEAD;
+    // Base site azimuth at insertion (no lead yet)
+    const theta_base = thetaE_now + n_spinE * t_ascent;
 
-    // Launch-site radial direction (in XZ plane)
-    const entryDir = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));
+    // Radial at base; then apply *prograde* lead = CCW about +Y
+    const r_hat_base = new THREE.Vector3(Math.cos(theta_base), 0, Math.sin(theta_base));
+    const entryDir   = rotY(r_hat_base.clone(), LAUNCH_LEAD).normalize(); // CCW = prograde
 
-    // Burn direction = +u from the transfer block (periapsis direction)
-    const { u } = updateParkingOrbitAndTransfer._uv || { u: new THREE.Vector3(1,0,0) };
+    // Burn direction from transfer block (periapsis direction in XZ)
+    const { u } = updateParkingOrbitAndTransfer._uv;
     const burnDir = u.clone().normalize();
 
-    // CCW sweep from entry → burn about +Y
-    const dPhi = angleCCW_XZ(entryDir, burnDir); // ∈ [0, 2π)
+    // Prograde sweep = CCW from entry -> burn
+    const dPhi = angleCCW_XZ(entryDir, burnDir);
 
-    for (let i = 0; i <= N; i++) {
-      const phi = (i / N) * dPhi;                      // rotate entryDir by phi
-      const dir = rotY(entryDir.clone(), phi).normalize();
+    for (let i=0; i<=N; i++) {
+      const φ = (i/N) * dPhi;
+      const dir = rotY(entryDir.clone(), φ).normalize();
       const p = earthW.clone().add(dir.multiplyScalar(r1));
       pos.setXYZ(i, p.x, p.y, p.z);
     }
-    // Ensure the first vertex is exactly the entry point
-    const pEntryExact = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
-    pos.setXYZ(0, pEntryExact.x, pEntryExact.y, pEntryExact.z);
 
+    // Snap endpoints exactly
+    const pEntry = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
+    const pBurn  = earthW.clone().add(burnDir.clone().multiplyScalar(r1));
+    pos.setXYZ(0, pEntry.x, pEntry.y, pEntry.z);
+    pos.setXYZ(N, pBurn.x,  pBurn.y,  pBurn.z);
     pos.needsUpdate = true;
   }
 
   // --- 3) ASCENT arc (fixed relative to Earth) ---
   {
-    // Entry point (start of parking circle) is the site radial after ascent + downrange lead
-    const theta_entry = thetaE_now + n_spinE * t_ascent + LAUNCH_LEAD;
+    const theta_base = thetaE_now + n_spinE * t_ascent;
 
-    // radial and prograde-tangent directions in the XZ plane at theta_entry
-    const r_hat = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));               // radial
-    const t_hat = new THREE.Vector3(-Math.sin(theta_entry), 0, Math.cos(theta_entry)).normalize();  // prograde
+    // Radial at base; apply same prograde lead
+    const r_hat_base = new THREE.Vector3(Math.cos(theta_base), 0, Math.sin(theta_base));
+    const r_hat_entry = rotY(r_hat_base.clone(), LAUNCH_LEAD).normalize(); // same as parking entryDir
+    const t_hat_entry = new THREE.Vector3(-r_hat_entry.z, 0, r_hat_entry.x).normalize(); // prograde tangent (CCW +90°)
 
-    const pEntry = earthW.clone().add(r_hat.clone().multiplyScalar(r1));
-    const pStart = worldPosOf(earthSite); // site now
+    const pEntry = earthW.clone().add(r_hat_entry.clone().multiplyScalar(r1));
+    const pStart = worldPosOf(earthSite);
+
     const pos = ascentGeom.getAttribute('position');
     const N = ORBIT.ascentSegments;
 
-    // Smooth "pitch-over" cubic Bézier from pStart → pEntry, pulled along prograde
-    const r0 = pStart.clone().sub(earthW).length(); // ~ Earth radius
-    const bend = 0.55 * (r1 - r0);                  // curve strength
-    const c1 = pStart.clone().add(t_hat.clone().multiplyScalar(bend));
-    const c2 = pEntry.clone().sub(t_hat.clone().multiplyScalar(bend));
+    // Bézier pulled along prograde so it kisses the circle tangentially
+    const r0 = pStart.clone().sub(earthW).length();
+    const bend = 0.55 * (r1 - r0);
+    const c1 = pStart.clone().add(t_hat_entry.clone().multiplyScalar(bend));
+    const c2 = pEntry.clone().sub(t_hat_entry.clone().multiplyScalar(bend));
 
     for (let i=0;i<=N;i++){
-      const t = i/N, u = 1 - t;
+      const t=i/N, u=1-t;
       const Bx = u*u*u*pStart.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*pEntry.x;
       const By = u*u*u*pStart.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*pEntry.y;
       const Bz = u*u*u*pStart.z + 3*u*u*t*c1.z + 3*u*t*t*c2.z + t*t*t*pEntry.z;
@@ -436,6 +440,9 @@ function angleCCW_XZ(a, b) {
   const det = x1*z2 - z1*x2;          // sin(theta) (y component of cross)
   return wrap2Pi(Math.atan2(det, dot));
 }
+
+// CW angle from a -> b in XZ plane
+function angleCW_XZ(a, b) { return angleCCW_XZ(b, a); }
 
 // Minimal hohmann time-of-flight between radii r1 and r2 with parameter mu
 function hohmannTOF(r1, r2, mu){
