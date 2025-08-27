@@ -433,26 +433,48 @@ function updateParkingOrbitAndTransfer() {
     }
   }
 
-  // --- 3) ASCENT arc (fixed relative to Earth) ---
+  // --- 3) ASCENT arc (single circular arc; tangent-parallel at entry) ---
   {
-    const pEntry = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
+    // Entry radial (already prograde-led) and points
+    const r_hat_entry = entryDir.clone(); // unit, in XZ
+    const pEntry = earthW.clone().add(r_hat_entry.clone().multiplyScalar(r1));
     const pStart = worldPosOf(earthSite);
 
     const pos = ascentGeom.getAttribute('position');
     const N = ORBIT.ascentSegments;
 
-    // cubic Bézier pulled along +t_hat_entry so it is tangential and prograde
-    const r0   = pStart.clone().sub(earthW).length();
-    const bend = 0.55 * (r1 - r0);                // feel free to tweak 0.45..0.65
-    const c1   = pStart.clone().add(t_hat_entry.clone().multiplyScalar(bend));
-    const c2   = pEntry.clone().sub(t_hat_entry.clone().multiplyScalar(bend));
+    // --- Solve circle center on the line pEntry + s * r_hat_entry so:
+    // |pStart - (pEntry + s r_hat)| = |s|
+    const d = pStart.clone().sub(pEntry);              // vector from entry to start
+    const denom = 2 * d.dot(r_hat_entry);              // 2 d·r̂
+    let s;
+    if (Math.abs(denom) < 1e-6) {
+      // Degenerate geometry; fall back to a mild default
+      s = (r1 - EARTH_SITE.radius) * 0.6;
+    } else {
+      s = d.lengthSq() / denom;
+    }
+    const C = pEntry.clone().add(r_hat_entry.clone().multiplyScalar(s)); // circle center
+    const R = C.distanceTo(pEntry);                                      // circle radius
 
-    for (let i=0; i<=N; i++) {
-      const t=i/N, u1=1-t;
-      const Bx = u1*u1*u1*pStart.x + 3*u1*u1*t*c1.x + 3*u1*t*t*c2.x + t*t*t*pEntry.x;
-      const By = u1*u1*u1*pStart.y + 3*u1*u1*t*c1.y + 3*u1*t*t*c2.y + t*t*t*pEntry.y;
-      const Bz = u1*u1*u1*pStart.z + 3*u1*u1*t*c1.z + 3*u1*t*t*c2.z + t*t*t*pEntry.z;
-      pos.setXYZ(i, Bx, By, Bz);
+    // Angles about C for start/end
+    const angStart = Math.atan2(pStart.z - C.z, pStart.x - C.x);
+    const angEnd   = Math.atan2(pEntry.z - C.z, pEntry.x - C.x);
+
+    // Choose direction that makes the END tangent prograde
+    const radialEnd = pEntry.clone().sub(C).normalize();
+    const tanCCW    = new THREE.Vector3(-radialEnd.z, 0, radialEnd.x).normalize(); // CCW tangent
+    const useCCW    = tanCCW.dot(t_hat_entry) >= 0;
+    const delta     = useCCW ? wrap2Pi(angEnd - angStart) : -wrap2Pi(angStart - angEnd);
+
+    // Draw the arc; blend Y smoothly from start to entry
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      const ang = angStart + t * delta;
+      const x = C.x + R * Math.cos(ang);
+      const z = C.z + R * Math.sin(ang);
+      const y = THREE.MathUtils.lerp(pStart.y, pEntry.y, t * t * (3 - 2 * t)); // smoothstep
+      pos.setXYZ(i, x, y, z);
     }
     pos.needsUpdate = true;
   }
