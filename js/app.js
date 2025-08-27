@@ -433,49 +433,56 @@ function updateParkingOrbitAndTransfer() {
     }
   }
 
-  // --- 3) ASCENT arc (single circular arc; tangent-parallel at entry) ---
+  // --- 3) ASCENT arc (Hohmann-like ellipse: start at site, tangent-parallel at entry) ---
   {
-    // Entry radial (already prograde-led) and points
-    const r_hat_entry = entryDir.clone(); // unit, in XZ
-    const pEntry = earthW.clone().add(r_hat_entry.clone().multiplyScalar(r1));
-    const pStart = worldPosOf(earthSite);
+    // Basis at entry: u = radial to entry, v = prograde tangent at entry
+    const u = entryDir.clone().normalize();                 // radial (XZ)
+    const v = t_hat_entry.clone().normalize();              // prograde tangent (XZ)
+
+    const pEntry = earthW.clone().add(u.clone().multiplyScalar(r1)); // end on parking circle
+    const pStart = worldPosOf(earthSite);                              // launch site now
 
     const pos = ascentGeom.getAttribute('position');
     const N = ORBIT.ascentSegments;
 
-    // --- Solve circle center on the line pEntry + s * r_hat_entry so:
-    // |pStart - (pEntry + s r_hat)| = |s|
-    const d = pStart.clone().sub(pEntry);              // vector from entry to start
-    const denom = 2 * d.dot(r_hat_entry);              // 2 d·r̂
-    let s;
-    if (Math.abs(denom) < 1e-6) {
-      // Degenerate geometry; fall back to a mild default
-      s = (r1 - EARTH_SITE.radius) * 0.6;
-    } else {
-      s = d.lengthSq() / denom;
-    }
-    const C = pEntry.clone().add(r_hat_entry.clone().multiplyScalar(s)); // circle center
-    const R = C.distanceTo(pEntry);                                      // circle radius
+    // Ellipse centered at Earth:  r(ν) = earthW + u*(a cosν) + v*(b sinν)
+    // Constrain: at ν=0 -> pEntry  ⇒ a = r1.
+    const a = r1;
 
-    // Angles about C for start/end
-    const angStart = Math.atan2(pStart.z - C.z, pStart.x - C.x);
-    const angEnd   = Math.atan2(pEntry.z - C.z, pEntry.x - C.x);
+    // Express the start vector in {u,v} to solve ν0 and b exactly:
+    const sVec = pStart.clone().sub(earthW);         // start from Earth center
+    const s_u  = sVec.dot(u);
+    const s_v  = sVec.dot(v);
 
-    // Choose direction that makes the END tangent prograde
-    const radialEnd = pEntry.clone().sub(C).normalize();
-    const tanCCW    = new THREE.Vector3(-radialEnd.z, 0, radialEnd.x).normalize(); // CCW tangent
-    const useCCW    = tanCCW.dot(t_hat_entry) >= 0;
-    const delta     = useCCW ? wrap2Pi(angEnd - angStart) : -wrap2Pi(angStart - angEnd);
+    // Solve ν0 from cosν0 = s_u / a (clamped), then b from s_v = b sinν0
+    let cosNu0 = THREE.MathUtils.clamp(s_u / a, -1, 1);
+    let sin2   = Math.max(0, 1 - cosNu0 * cosNu0);
+    let sinNu0 = (s_v >= 0 ? 1 : -1) * Math.sqrt(sin2);
 
-    // Draw the arc; blend Y smoothly from start to entry
+    // If sinNu0 ~ 0 (near-circular alignment), use a gentle fallback
+    let b = Math.abs(sinNu0) < 1e-6 ? a : (s_v / sinNu0);
+    if (!isFinite(b) || Math.abs(b) < 1e-6) b = a;
+
+    const nu0 = Math.atan2(sinNu0, cosNu0); // start param angle (will map exactly to pStart)
+
+    // Draw ν from ν0 → 0; at ν=0 tangent is +v (parallel to parking)
     for (let i = 0; i <= N; i++) {
-      const t = i / N;
-      const ang = angStart + t * delta;
-      const x = C.x + R * Math.cos(ang);
-      const z = C.z + R * Math.sin(ang);
-      const y = THREE.MathUtils.lerp(pStart.y, pEntry.y, t * t * (3 - 2 * t)); // smoothstep
-      pos.setXYZ(i, x, y, z);
+      const t   = i / N;
+      const nu  = THREE.MathUtils.lerp(nu0, 0, t);
+      const xz  = u.clone().multiplyScalar(a * Math.cos(nu))
+                   .add(v.clone().multiplyScalar(b * Math.sin(nu)));
+      const pXZ = earthW.clone().add(xz);
+
+      // Smooth vertical blend (keeps the arc pretty without affecting plan view)
+      const y   = THREE.MathUtils.lerp(pStart.y, pEntry.y, t * t * (3 - 2 * t));
+
+      pos.setXYZ(i, pXZ.x, y, pXZ.z);
     }
+
+    // Snap endpoints exactly
+    pos.setXYZ(0, pStart.x, pStart.y, pStart.z);
+    pos.setXYZ(N, pEntry.x, pEntry.y, pEntry.z);
+
     pos.needsUpdate = true;
   }
 
