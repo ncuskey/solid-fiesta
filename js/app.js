@@ -4,8 +4,8 @@ import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/exampl
 // --- Simulation constants & config (minimal defaults) ---
 const TAU = Math.PI * 2;
 // Simulation speed: how many simulated days pass per real second
-// Reduced to 0.25 to slow the simulation by 50%
-const TIME = { daysPerSecond: 0.25, multiplier: 1.0 };
+// Set to 0.1 for a slower simulation pace
+const TIME = { daysPerSecond: 0.1, multiplier: 1.0 };
 // Earth's sidereal day in days
 const SIDEREAL_DAY = 0.99726968;
 
