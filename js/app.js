@@ -28,6 +28,10 @@ const TRANSFER = {
 const LEAD_DOWNRANGE_DEG = 30; // positive means "downrange/prograde"
 const LEAD_DOWNRANGE = THREE.MathUtils.degToRad(LEAD_DOWNRANGE_DEG);
 
+// Fixed entry lead (east/prograde)
+const ENTRY_LEAD_DEG = 30; // + = east/prograde (CCW about +Y)
+const ENTRY_LEAD = THREE.MathUtils.degToRad(ENTRY_LEAD_DEG);
+
 // +1 = CCW (prograde), -1 = CW (reverse)
 const PARKING_SENSE = -1;
 
@@ -378,13 +382,27 @@ function updateParkingOrbitAndTransfer() {
     updateParkingOrbitAndTransfer._uv = uvForParking;
   }
   // --- Unified entry direction (prograde = CCW about +Y) ---
-  // --- Entry direction (prograde = CCW) + tangent ---
-  const theta_base   = thetaE_now + n_spinE * t_ascent;                      // site azimuth at insertion
-  const r_hat_base   = new THREE.Vector3(Math.cos(theta_base), 0, Math.sin(theta_base));
-  // downrange lead = CCW about +Y (flip sign so positive LEAD_DOWNRANGE matches previous -30)
-  const entryDir     = rotY(r_hat_base.clone(), -LEAD_DOWNRANGE).normalize();
-  // prograde tangent at entry = entry × +Y  (== (-entry.z, 0, entry.x))
-  const t_hat_entry  = new THREE.Vector3(-entryDir.z, 0, entryDir.x).normalize();
+  // Use a fixed east/prograde lead from the site's current direction (no spin-ahead)
+  // Earth center (world) - `earthW` is declared earlier in this function
+
+  // Launch site direction *right now* in Earth-centered frame (flatten to XZ)
+  const siteNowDir = worldPosOf(earthSite).sub(earthW).setY(0).normalize();
+
+  // Entry is a fixed east/prograde offset from the site (no spin-ahead)
+  // FIX: east is CW here → negate the angle
+  const entryDir = rotY(siteNowDir.clone(), -ENTRY_LEAD).normalize();
+
+  // Quick self-check (should print ≈ +30.00 deg)
+  console.debug(
+    'entry lead deg ≈',
+    THREE.MathUtils.radToDeg(angleCCW_XZ(siteNowDir, entryDir)).toFixed(2)
+  );
+
+  // Prograde tangent at entry = entry × +Y  (parallel to the parking orbit direction)
+  const t_hat_entry = new THREE.Vector3(-entryDir.z, 0, entryDir.x).normalize();
+
+  // Parking entry point on the circle
+  const pEntry = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
 
   // --- 2) PARKING-ORBIT arc (variable length only) ---
   {
