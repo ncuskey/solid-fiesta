@@ -23,6 +23,10 @@ const TRANSFER = {
   gapSize: 0.4
 };
 
+// Launch insertion lead: advance this many degrees downrange from the site
+const LAUNCH = { leadDeg: 15 }; // advance ~15° along the parking orbit at insertion
+const LAUNCH_LEAD = THREE.MathUtils.degToRad(LAUNCH.leadDeg);
+
 // UI/status and mission placeholders
 const statusEl = document.getElementById('status');
 let mission = null;
@@ -353,14 +357,14 @@ function updateParkingOrbitAndTransfer() {
     const pos = waitArcGeom.getAttribute('position');
     const N = ORBIT.segments;
 
-    // Entry angle: Earth site after ascent; Burn at φ=0 in {u,v} basis
-    const theta_entry = thetaE_now + n_spinE * t_ascent;
+  // Entry angle: site after ascent, then a small prograde lead so we're downrange
+  const theta_entry = thetaE_now + n_spinE * t_ascent + LAUNCH_LEAD;
 
     // Use the u,v from the transfer block (burn direction = +u)
     const { u, v } = updateParkingOrbitAndTransfer._uv || { u: new THREE.Vector3(1,0,0), v: new THREE.Vector3(0,0,1) };
 
-    // Convert entry direction into the {u,v} basis (so φ=0 is burn)
-    const entryDir = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));
+  // Convert entry direction into the {u,v} basis (so φ=0 is burn)
+  const entryDir = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));
     const entryAng = Math.atan2(entryDir.dot(v), entryDir.dot(u)); // angle on the circle
 
     const dPhi = wrap2Pi(0 - entryAng); // sweep from entry to burn
@@ -376,30 +380,26 @@ function updateParkingOrbitAndTransfer() {
 
   // --- 3) ASCENT arc (fixed relative to Earth) ---
   {
-    // Entry point (start of parking circle) is the site radial after ascent
-    const theta_entry = thetaE_now + n_spinE * t_ascent;
-    const entryDir = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));
-    const pEntry   = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
+    // Entry point (start of parking circle) is the site radial after ascent + downrange lead
+    const theta_entry = thetaE_now + n_spinE * t_ascent + LAUNCH_LEAD;
 
-    const pStart   = worldPosOf(earthSite); // site now
+    // radial and prograde-tangent directions in the XZ plane at theta_entry
+    const r_hat = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));               // radial
+    const t_hat = new THREE.Vector3(-Math.sin(theta_entry), 0, Math.cos(theta_entry)).normalize();  // prograde
+
+    const pEntry = earthW.clone().add(r_hat.clone().multiplyScalar(r1));
+    const pStart = worldPosOf(earthSite); // site now
     const pos = ascentGeom.getAttribute('position');
     const N = ORBIT.ascentSegments;
 
-  // Tangent to the parking circle at entry (prograde).
-  // Use entryDir x up so the tangent points in the direction of motion (prograde).
-  const t_hat = entryDir.clone().cross(new THREE.Vector3(0,1,0)).normalize();
-
-    // Use a smooth "pitch-over" curve: cubic Bézier from pStart → pEntry
-    // Controls pull along the tangent so it bends into the orbit
-    const r0 = pStart.clone().sub(earthW).length();      // ~ Earth radius
-    const bend = 0.55 * (r1 - r0);                       // how hard to pitch over
+    // Smooth "pitch-over" cubic Bézier from pStart → pEntry, pulled along prograde
+    const r0 = pStart.clone().sub(earthW).length(); // ~ Earth radius
+    const bend = 0.55 * (r1 - r0);                  // curve strength
     const c1 = pStart.clone().add(t_hat.clone().multiplyScalar(bend));
     const c2 = pEntry.clone().sub(t_hat.clone().multiplyScalar(bend));
 
     for (let i=0;i<=N;i++){
-      const t = i/N;
-      const u = 1 - t;
-      // cubic Bézier blending
+      const t = i/N, u = 1 - t;
       const Bx = u*u*u*pStart.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*pEntry.x;
       const By = u*u*u*pStart.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*pEntry.y;
       const Bz = u*u*u*pStart.z + 3*u*u*t*c1.z + 3*u*t*t*c2.z + t*t*t*pEntry.z;
