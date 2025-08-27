@@ -357,24 +357,29 @@ function updateParkingOrbitAndTransfer() {
     const pos = waitArcGeom.getAttribute('position');
     const N = ORBIT.segments;
 
-  // Entry angle: site after ascent, then a small prograde lead so we're downrange
-  const theta_entry = thetaE_now + n_spinE * t_ascent + LAUNCH_LEAD;
+    // Entry = site azimuth after ascent + optional downrange lead
+    const theta_entry = thetaE_now + n_spinE * t_ascent + LAUNCH_LEAD;
 
-    // Use the u,v from the transfer block (burn direction = +u)
-    const { u, v } = updateParkingOrbitAndTransfer._uv || { u: new THREE.Vector3(1,0,0), v: new THREE.Vector3(0,0,1) };
+    // Launch-site radial direction (in XZ plane)
+    const entryDir = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));
 
-  // Convert entry direction into the {u,v} basis (so φ=0 is burn)
-  const entryDir = new THREE.Vector3(Math.cos(theta_entry), 0, Math.sin(theta_entry));
-    const entryAng = Math.atan2(entryDir.dot(v), entryDir.dot(u)); // angle on the circle
+    // Burn direction = +u from the transfer block (periapsis direction)
+    const { u } = updateParkingOrbitAndTransfer._uv || { u: new THREE.Vector3(1,0,0) };
+    const burnDir = u.clone().normalize();
 
-    const dPhi = wrap2Pi(0 - entryAng); // sweep from entry to burn
-    for (let i=0;i<=N;i++){
-      const t = i/N;
-      const φ = entryAng + t*dPhi;
-      const dir = u.clone().multiplyScalar(Math.cos(φ)).add(v.clone().multiplyScalar(Math.sin(φ)));
+    // CCW sweep from entry → burn about +Y
+    const dPhi = angleCCW_XZ(entryDir, burnDir); // ∈ [0, 2π)
+
+    for (let i = 0; i <= N; i++) {
+      const phi = (i / N) * dPhi;                      // rotate entryDir by phi
+      const dir = rotY(entryDir.clone(), phi).normalize();
       const p = earthW.clone().add(dir.multiplyScalar(r1));
       pos.setXYZ(i, p.x, p.y, p.z);
     }
+    // Ensure the first vertex is exactly the entry point
+    const pEntryExact = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
+    pos.setXYZ(0, pEntryExact.x, pEntryExact.y, pEntryExact.z);
+
     pos.needsUpdate = true;
   }
 
@@ -422,6 +427,14 @@ function angleXZ(v){ return Math.atan2(v.z, v.x); }
 function rotY(v, ang){
   const c = Math.cos(ang), s = Math.sin(ang);
   return new THREE.Vector3(c*v.x - s*v.z, v.y, s*v.x + c*v.z);
+}
+
+// CCW angle from vector a -> b in the XZ plane, result in [0, 2π)
+function angleCCW_XZ(a, b) {
+  const x1=a.x, z1=a.z, x2=b.x, z2=b.z;
+  const dot = x1*x2 + z1*z2;          // cos(theta)
+  const det = x1*z2 - z1*x2;          // sin(theta) (y component of cross)
+  return wrap2Pi(Math.atan2(det, dot));
 }
 
 // Minimal hohmann time-of-flight between radii r1 and r2 with parameter mu
