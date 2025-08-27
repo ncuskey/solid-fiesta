@@ -23,9 +23,12 @@ const TRANSFER = {
   gapSize: 0.4
 };
 
-// Launch insertion lead: positive means CCW (prograde)
-const LAUNCH_LEAD_DEG = 15; // positive means CCW (prograde)
-const LAUNCH_LEAD = THREE.MathUtils.degToRad(LAUNCH_LEAD_DEG);
+// Launch insertion downrange lead: positive means downrange/prograde
+const LEAD_DOWNRANGE_DEG = 30; // positive means "downrange/prograde"
+const LEAD_DOWNRANGE = THREE.MathUtils.degToRad(LEAD_DOWNRANGE_DEG);
+
+// +1 = CCW (prograde), -1 = CW (reverse)
+const PARKING_SENSE = -1;
 
 // UI/status and mission placeholders
 const statusEl = document.getElementById('status');
@@ -253,6 +256,10 @@ function updateParkingOrbitAndTransfer() {
   const n_spinE = (TAU / SIDEREAL_DAY) * (TIME.daysPerSecond * TIME.multiplier);
   const n_moon  = w.moon;
 
+  // parking / angle temporaries (declared here so outer logging can access them)
+  let burnDir = null;
+  let s_raw = 0, s = 0, dPhi = 0;
+
   // Earth site inertial angle NOW (about +Y)
   const earthSiteNowLocalRot = earthSite.position.clone().applyAxisAngle(new THREE.Vector3(0,1,0), earth.rotation.y);
   const thetaE_now = angleXZ(earthSiteNowLocalRot);
@@ -351,73 +358,145 @@ function updateParkingOrbitAndTransfer() {
     // Stash u,v on the function scope so the parking-arc block can use them
     updateParkingOrbitAndTransfer._uv = uvForParking;
   }
+  // --- Unified entry direction (prograde = CCW about +Y) ---
+  // --- Entry direction (prograde = CCW) + tangent ---
+  const theta_base   = thetaE_now + n_spinE * t_ascent;                      // site azimuth at insertion
+  const r_hat_base   = new THREE.Vector3(Math.cos(theta_base), 0, Math.sin(theta_base));
+  // downrange lead = CCW about +Y (flip sign so positive LEAD_DOWNRANGE matches previous -30)
+  const entryDir     = rotY(r_hat_base.clone(), -LEAD_DOWNRANGE).normalize();
+  // prograde tangent at entry = entry × +Y  (== (-entry.z, 0, entry.x))
+  const t_hat_entry  = new THREE.Vector3(-entryDir.z, 0, entryDir.x).normalize();
 
   // --- 2) PARKING-ORBIT arc (variable length only) ---
   {
+    // REQUIRE: entryDir, t_hat_entry, earthW, r1 defined above
     const pos = waitArcGeom.getAttribute('position');
     const N = ORBIT.segments;
 
-    // Base site azimuth at insertion (no lead yet)
-    const theta_base = thetaE_now + n_spinE * t_ascent;
-
-    // Radial at base; then apply *prograde* lead = CCW about +Y
-    const r_hat_base = new THREE.Vector3(Math.cos(theta_base), 0, Math.sin(theta_base));
-    const entryDir   = rotY(r_hat_base.clone(), LAUNCH_LEAD).normalize(); // CCW = prograde
-
-    // Burn direction from transfer block (periapsis direction in XZ)
-    const { u } = updateParkingOrbitAndTransfer._uv;
-    const burnDir = u.clone().normalize();
-
-    // Prograde sweep = CCW from entry -> burn
-    const dPhi = angleCCW_XZ(entryDir, burnDir);
-
-    for (let i=0; i<=N; i++) {
-      const φ = (i/N) * dPhi;
-      const dir = rotY(entryDir.clone(), φ).normalize();
-      const p = earthW.clone().add(dir.multiplyScalar(r1));
-      pos.setXYZ(i, p.x, p.y, p.z);
+    // 1) Get burn direction in XZ (periapsis radial). Prefer transfer.u; else derive from Moon site.
+    let burnDir;
+    if (updateParkingOrbitAndTransfer._uv && updateParkingOrbitAndTransfer._uv.u) {
+      const u = updateParkingOrbitAndTransfer._uv.u;
+      burnDir = new THREE.Vector3(u.x, 0, u.z).normalize();
+    } else {
+      // Fallback: opposite of Earth→MoonSite (so periapsis points "away" from arrival)
+      const moonSiteW = worldPosOf(moonSite);
+      burnDir = moonSiteW.clone().sub(earthW).setY(0).normalize().multiplyScalar(-1);
     }
+    if (!isFinite(burnDir.lengthSq()) || burnDir.lengthSq() < 1e-12) {
+      // nothing sensible to draw this frame
+      pos.getAttribute && (pos.needsUpdate = true);
+    } else {
 
-    // Snap endpoints exactly
-    const pEntry = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
-    const pBurn  = earthW.clone().add(burnDir.clone().multiplyScalar(r1));
-    pos.setXYZ(0, pEntry.x, pEntry.y, pEntry.z);
-    pos.setXYZ(N, pBurn.x,  pBurn.y,  pBurn.z);
-    pos.needsUpdate = true;
+        // 2) Compute CCW angle entry→burn (0..2π)
+        const dPhiCCW = angleCCW_XZ(entryDir, burnDir);  // [0, 2π) CCW angle entry -> burn
+        const sweep = (PARKING_SENSE === 1)
+          ? dPhiCCW                    // CCW (prograde)
+          : -(TAU - dPhiCCW);          // CW (reverse) with the *correct* magnitude
+
+        for (let i = 0; i <= ORBIT.segments; i++) {
+          const phi = (i / ORBIT.segments) * sweep;      // rotate about +Y
+          const dir = rotY(entryDir.clone(), phi).normalize();
+          const p   = earthW.clone().add(dir.multiplyScalar(r1));
+          waitArcGeom.attributes.position.setXYZ(i, p.x, p.y, p.z);
+        }
+        waitArcGeom.attributes.position.needsUpdate = true;
+
+        // keep existing endpoint snaps (pEntry and pBurn)
+        const pEntry = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
+        const pBurn  = earthW.clone().add(burnDir.clone().multiplyScalar(r1));
+        pos.setXYZ(0, pEntry.x, pEntry.y, pEntry.z);
+        pos.setXYZ(N, pBurn.x,  pBurn.y,  pBurn.z);
+
+      // (optional) quick sanity log: should be ~ +1 if the arc starts prograde
+      // const P0 = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0));
+      // const P1 = new THREE.Vector3(pos.getX(1), pos.getY(1), pos.getZ(1));
+      // console.debug('[ParkingArc] tan·prograde ≈', P1.clone().sub(P0).normalize().dot(t_hat_entry).toFixed(3));
+    }
+  }
+
+  // Ensure burnDir and angle diagnostics are available in outer scope for logging
+  // (these variables are declared earlier in function scope)
+
+  // Small one-time angle debug useful to diagnose CCW/CW selection
+  if (!updateParkingOrbitAndTransfer._angleLogged) {
+    updateParkingOrbitAndTransfer._angleLogged = true;
+    try {
+      const theta_entry = angleXZ(entryDir);
+      const theta_burn  = angleXZ(burnDir);
+      const deg = (r) => (r * 180/Math.PI).toFixed(2);
+      console.log('[HohmannDBG-ANG]', 'theta_entry deg', deg(theta_entry), 'theta_burn deg', deg(theta_burn));
+      console.log('[HohmannDBG-ANG]', 'chosen dPhi deg', deg(dPhi));
+    } catch (e) {
+      console.warn('[HohmannDBG-ANG] failed', e);
+    }
   }
 
   // --- 3) ASCENT arc (fixed relative to Earth) ---
   {
-    const theta_base = thetaE_now + n_spinE * t_ascent;
-
-    // Radial at base; apply same prograde lead
-    const r_hat_base = new THREE.Vector3(Math.cos(theta_base), 0, Math.sin(theta_base));
-    const r_hat_entry = rotY(r_hat_base.clone(), LAUNCH_LEAD).normalize(); // same as parking entryDir
-    const t_hat_entry = new THREE.Vector3(-r_hat_entry.z, 0, r_hat_entry.x).normalize(); // prograde tangent (CCW +90°)
-
-    const pEntry = earthW.clone().add(r_hat_entry.clone().multiplyScalar(r1));
+    const pEntry = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
     const pStart = worldPosOf(earthSite);
 
     const pos = ascentGeom.getAttribute('position');
     const N = ORBIT.ascentSegments;
 
-    // Bézier pulled along prograde so it kisses the circle tangentially
-    const r0 = pStart.clone().sub(earthW).length();
-    const bend = 0.55 * (r1 - r0);
-    const c1 = pStart.clone().add(t_hat_entry.clone().multiplyScalar(bend));
-    const c2 = pEntry.clone().sub(t_hat_entry.clone().multiplyScalar(bend));
+    // cubic Bézier pulled along +t_hat_entry so it is tangential and prograde
+    const r0   = pStart.clone().sub(earthW).length();
+    const bend = 0.55 * (r1 - r0);                // feel free to tweak 0.45..0.65
+    const c1   = pStart.clone().add(t_hat_entry.clone().multiplyScalar(bend));
+    const c2   = pEntry.clone().sub(t_hat_entry.clone().multiplyScalar(bend));
 
-    for (let i=0;i<=N;i++){
-      const t=i/N, u=1-t;
-      const Bx = u*u*u*pStart.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*pEntry.x;
-      const By = u*u*u*pStart.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*pEntry.y;
-      const Bz = u*u*u*pStart.z + 3*u*u*t*c1.z + 3*u*t*t*c2.z + t*t*t*pEntry.z;
+    for (let i=0; i<=N; i++) {
+      const t=i/N, u1=1-t;
+      const Bx = u1*u1*u1*pStart.x + 3*u1*u1*t*c1.x + 3*u1*t*t*c2.x + t*t*t*pEntry.x;
+      const By = u1*u1*u1*pStart.y + 3*u1*u1*t*c1.y + 3*u1*t*t*c2.y + t*t*t*pEntry.y;
+      const Bz = u1*u1*u1*pStart.z + 3*u1*u1*t*c1.z + 3*u1*t*t*c2.z + t*t*t*pEntry.z;
       pos.setXYZ(i, Bx, By, Bz);
     }
     pos.needsUpdate = true;
   }
 
   // Telemetry (sim-days)
+  // One-time debug logging to help verify geometry and directions in the browser console
+  if (!updateParkingOrbitAndTransfer._logged) {
+    updateParkingOrbitAndTransfer._logged = true;
+    try {
+      const dbg = (label, ...vals) => console.log('[HohmannDBG]', label, ...vals);
+
+      const pEntryW = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
+      const { u: uv_u, v: uv_v } = updateParkingOrbitAndTransfer._uv || { u: null, v: null };
+      const moonSiteW = worldPosOf(moonSite);
+
+      dbg('earthW', earthW);
+      dbg('moonSiteW', moonSiteW);
+      dbg('entryDir (local XZ)', entryDir);
+      dbg('t_hat_entry (prograde)', t_hat_entry);
+      dbg('pEntryW', pEntryW);
+
+      // burn/transfer
+      const burnDirDbg = (typeof burnDir !== 'undefined') ? burnDir : (uv_u ? uv_u.clone().normalize() : null);
+      const pBurnW = earthW.clone().add((burnDirDbg || new THREE.Vector3()).clone().multiplyScalar(r1));
+      dbg('burnDir', burnDirDbg);
+      dbg('pBurnW', pBurnW);
+
+      if (uv_u) dbg('transfer.u', uv_u, 'transfer.v', uv_v);
+
+      // Sample a few vertices from the parking and ascent geometries (first, mid, last)
+      function sampleAttr(attr, name) {
+        if (!attr) return dbg(name, 'missing');
+        const cnt = attr.count || (attr.array ? (attr.array.length/3) : 0);
+        if (cnt === 0) return dbg(name, 'empty');
+        const get = (i) => new THREE.Vector3(attr.getX(i), attr.getY(i), attr.getZ(i));
+        const mid = Math.floor((cnt-1)/2);
+        dbg(name, { first: get(0), mid: get(mid), last: get(cnt-1), count: cnt });
+      }
+      sampleAttr(waitArcGeom.getAttribute('position'), 'waitArc');
+      sampleAttr(ascentGeom.getAttribute('position'), 'ascent');
+    } catch (e) {
+      console.warn('[HohmannDBG] debug log failed', e);
+    }
+  }
+
   return {
     waitDays: wait * TIME.daysPerSecond,
     tofDays:  tof  * TIME.daysPerSecond,
@@ -427,7 +506,7 @@ function updateParkingOrbitAndTransfer() {
 
 function wrap2Pi(a){ a%=TAU; return a<0?a+TAU:a; }
 function wrapPi(a){ a=(a+Math.PI)%TAU; if(a<0)a+=TAU; return a-Math.PI; }
-function angleXZ(v){ return Math.atan2(v.z, v.x); }
+function angleXZ(v){ if(!v) return 0; return Math.atan2(v.z, v.x); }
 function rotY(v, ang){
   const c = Math.cos(ang), s = Math.sin(ang);
   return new THREE.Vector3(c*v.x - s*v.z, v.y, s*v.x + c*v.z);
@@ -443,6 +522,11 @@ function angleCCW_XZ(a, b) {
 
 // CW angle from a -> b in XZ plane
 function angleCW_XZ(a, b) { return angleCCW_XZ(b, a); }
+
+function toXZunit(v) {
+  return new THREE.Vector3(v.x, 0, v.z).normalize();
+}
+const DEG = r => (r*180/Math.PI);
 
 // Minimal hohmann time-of-flight between radii r1 and r2 with parameter mu
 function hohmannTOF(r1, r2, mu){
