@@ -3,7 +3,7 @@
 
 Minimal Three.js demo: Sun, Earth (with Moon), and Mars with simple circular orbits.
 
-This repo now boots a modular entrypoint `js/main.js` (instead of the older monolith `js/app.js`) and uses an import map in `index.html` to load Three.js from the CDN. There is no local `three` bundle in the repo.
+This repo boots a modular entrypoint `js/main.js` (the supported app entrypoint) and uses an import map in `index.html` to load Three.js from the CDN. There is no local `three` bundle in the repo. A legacy monolithic copy of the old `js/app.js` is preserved at `js/legacy/app.js` for reference.
 
 Open `index.html` in a local server (for example: `python3 -m http.server 8080`) and visit http://localhost:8080 to view the demo.
 

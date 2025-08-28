@@ -13,13 +13,9 @@ JS structure
   - Lightweight bootstrap that initializes the renderer, scene, bodies, overlays, and systems.
   - Creates overlay geometry via `js/scene/overlays.js` (parking, ascent, transfer) and listens for `missions:refresh` to recompute those BufferAttributes.
 
-- js/app.js
-  - Central scene setup and animation loop. Wires modules together:
-    - initializes Three.js renderer, camera, controls
-    - creates bodies from `js/scene/bodies.js`
-    - requests overlay geometry from `js/scene/overlays.js`
-    - initializes mission system (`js/systems/missions.js`) and camera modes (`js/systems/cameraModes.js`)
-    - publishes and responds to events on the core event bus (`js/core/events.js`)
+- js/app.js (legacy)
+  - Legacy monolithic entry preserved at `js/legacy/app.js` for reference. The supported bootstrap is `js/main.js`.
+  - The legacy copy wires many systems together in a single file (renderer, camera, controls, bodies, overlays, missions). It's retained only for debugging and historical context.
 
 - js/scene/
   - overlays.js
@@ -39,7 +35,7 @@ JS structure
     - Exposes `initMissions()` for event wiring and `launchMission()` for bootstrap compatibility.
   - cameraModes.js
     - Provides `setupCameraModes(camera, controls, getTarget?)` which initializes module state and returns `{ focusEarth, focusInnerSystem }`.
-    - Also provides `initCameraModes`, `setMode('orbit'|'topdown')`, and `updateCamera(dt)` for internal usage.
+    - `setupCameraModes` is the public initializer; `initCameraModes` mentions were used in legacy code/comments and have been removed from the supported API surface.
 
 - js/math/
   - constants.js
