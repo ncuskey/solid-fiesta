@@ -12,6 +12,11 @@ Checklist
 - [ ] Run a quick smoke test: start a static server and open `index.html` in a browser. Verify no console import errors and that the scene renders.
 - [ ] Optional: vendor `three/examples/jsm/` modules locally or keep import-map mapping in `index.html` (decide team preference).
 
+Note: small housekeeping already done in this branch:
+- Inline SVG favicon was added to `index.html` to avoid `favicon.ico` 404s when running simple static servers.
+- `js/core/index.js` barrel was added to re-export `on/emit/off` for consistent imports.
+- `server.log` and `server.pid` were removed from the git index and are now ignored via `.gitignore`.
+
 Nice-to-have polish
 - Add a tiny README section with the single command to run a static server.
 - Add a short note in `js/legacy/app.js` top comment pointing to the TODO and explaining why it exists.

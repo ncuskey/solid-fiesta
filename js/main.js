@@ -5,10 +5,10 @@ import { createBodies } from './scene/bodies.js';
 import { initPanel } from './ui/panel.js';
 import { TIME } from './core/time.js';
 import { currentAngularRates } from './math/orbits.js';
-import { on, emit } from './core/events.js';
+import { on, emit, off } from './core/index.js';
 import { createParkingArc, createAscentArc, createTransferLine } from './scene/overlays.js';
 import { ORBIT, HOHMANN } from './math/constants.js';
-import { setupCameraModes } from './systems/cameraModes.js';
+import { setupCameraModes, updateCamera } from './systems/cameraModes.js';
 import { updateKinematics } from './systems/kinematics.js';
 import { launchMission } from './systems/missions.js';
 
@@ -120,6 +120,9 @@ function tick(dt) {
   // keep simple orbital rates but allow systems/kinematics to update scene state
   if (bodies.earthGroup) bodies.earthGroup.rotation.y += r.earth * dt;
   if (bodies.moon) bodies.moon.rotation.y += r.moon * dt;
+
+  // keep camera follow in sync (topdown mode)
+  try { updateCamera(dt); } catch (_) { }
 
   // systems-level per-frame updates (currently placeholder)
   try { updateKinematics(bodies, dt); } catch (e) { /* ignore for now */ }

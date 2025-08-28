@@ -13,7 +13,7 @@ What changed
 Quick migration checklist
 1. Replace any direct imports of `../js/app.js` with `../js/main.js` or import the specific modules you need.
 2. Replace `initCameraModes(...)` usage with `setupCameraModes(camera, controls, getTarget?)`.
-3. Use `js/core/index.js` to import events: `import { on, emit, off } from '../core'`.
+3. Use `js/core/index.js` to import events: `import { on, emit, off } from '../core/index.js`.
 4. If you need legacy behavior, open `archive/legacy-app-monolith.js` for reference.
 
 Recommended further work

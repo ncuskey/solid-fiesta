@@ -4,6 +4,7 @@ Top-level layout
 
 - index.html
   - Entry HTML that defines an import map for `three` (CDN ESM build) and loads `js/main.js` as the modular entrypoint.
+  - Contains an inline SVG favicon to avoid `favicon.ico` 404s from simple static servers.
 - css/style.css
   - UI panel and layout styles.
 
@@ -44,6 +45,8 @@ JS structure
 - js/core/
   - events.js
     - Minimal pub/sub used across modules (on/emit/off). Keeps modules decoupled.
+  - index.js
+    - Barrel file that re-exports `on, emit, off` from `events.js`. Use `import { on, emit, off } from './core/index.js'` in browser ESM to avoid relying on import-map or bundler resolution.
   - state.js, time.js
     - Small runtime state and clock helpers.
 

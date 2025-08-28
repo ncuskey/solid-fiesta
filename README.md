@@ -23,6 +23,9 @@ Modular wiring notes
 
 Removed
 - Local copy of Three.js (`js/three.min.js`) removed in favor of the import-map CDN.
+- Local copy of Three.js (`js/three.min.js`) removed in favor of the import-map CDN.
+- Inline SVG favicon added to `index.html` to avoid `favicon.ico` 404s from simple dev servers.
+- Local server runtime artefacts (`server.log`, `server.pid`) are now ignored by Git and removed from the repo index.
 
 These changes keep UI and sim logic decoupled and make visuals and gameplay easier to iterate on.
 ## Running
