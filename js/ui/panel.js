@@ -21,7 +21,3 @@ export function initPanel() {
   return { setStatus: (t)=>{ statusEl.textContent = t; } };
 }
 // panel.js - binds to #ui-panel, buttons, speed control
-import { TIME } from '../core/time.js';
-export function setupUI(){
-  // placeholder
-}
