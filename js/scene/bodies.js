@@ -1,5 +1,23 @@
 import * as THREE from 'three';
 
+/**
+ * @typedef {Object} Bodies
+ * @property {THREE.Mesh} sun
+ * @property {THREE.Object3D} solarPivot
+ * @property {THREE.Object3D} earthPivot
+ * @property {THREE.Object3D} earthGroup - alias for earthPivot for legacy callers
+ * @property {THREE.Mesh} earth
+ * @property {THREE.Object3D} moonPivot
+ * @property {THREE.Mesh} moon
+ * @property {THREE.Object3D} marsPivot
+ * @property {THREE.Mesh} mars
+ */
+
+/**
+ * Create scene bodies and pivots.
+ * @param {THREE.Scene} scene
+ * @returns {Bodies}
+ */
 export function createBodies(scene) {
   // Sun
   const sun = new THREE.Mesh(

@@ -1,16 +1,6 @@
 import * as THREE from 'three';
-export function latLonToLocal(latDeg, lonDeg, r) {
-  const lat = THREE.MathUtils.degToRad(latDeg);
-  const lon = THREE.MathUtils.degToRad(lonDeg);
-  return new THREE.Vector3(
-    r * Math.cos(lat) * Math.cos(lon),
-    r * Math.sin(lat),
-    r * Math.cos(lat) * Math.sin(lon)
-  );
-}
-// geo.js - latLonToLocal and related helpers
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
 
+// Convert geographic lat/lon (degrees) + radius -> local Cartesian (Y up)
 export function latLonToLocal(latDeg, lonDeg, r) {
   const lat = THREE.MathUtils.degToRad(latDeg);
   const lon = THREE.MathUtils.degToRad(lonDeg);

@@ -1,6 +1,19 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js';
 
+/**
+ * @typedef {Object} RendererResult
+ * @property {THREE.Scene} scene
+ * @property {THREE.PerspectiveCamera} camera
+ * @property {THREE.WebGLRenderer} renderer
+ * @property {import('three/examples/jsm/controls/OrbitControls').OrbitControls} controls
+ */
+
+/**
+ * Create a renderer, camera and orbit controls and append canvas to rootEl.
+ * @param {HTMLElement} rootEl
+ * @returns {RendererResult}
+ */
 export function createRenderer(rootEl) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000000);

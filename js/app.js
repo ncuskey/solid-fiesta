@@ -1,4 +1,4 @@
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
+import * as THREE from 'three';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js';
 import { TAU, ORBIT, TRANSFER, ENTRY_LEAD_DEG, PARKING_SENSE, HOHMANN } from './math/constants.js';
 import { latLonToLocal } from './math/geo.js';

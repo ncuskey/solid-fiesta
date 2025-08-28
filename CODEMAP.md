@@ -3,14 +3,15 @@ Codemap for solid-fiesta
 Top-level layout
 
 - index.html
-  - Entry HTML that imports Three.js from CDN and loads `js/main.js`.
+  - Entry HTML that defines an import map for `three` (CDN ESM build) and loads `js/main.js` as the modular entrypoint.
 - css/style.css
   - UI panel and layout styles.
 
 JS structure
 
-- js/main.js
-  - Lightweight bootstrap that initializes the app. Expects `launchMission` to be available for compatibility with older wiring.
+ - js/main.js
+  - Lightweight bootstrap that initializes the renderer, scene, bodies, overlays, and systems.
+  - Creates overlay geometry via `js/scene/overlays.js` (parking, ascent, transfer) and listens for `missions:refresh` to recompute those BufferAttributes.
 
 - js/app.js
   - Central scene setup and animation loop. Wires modules together:
@@ -26,7 +27,8 @@ JS structure
       - parking orbit sweep (arc)
       - ascent arc (curved line from surface to parking)
       - transfer dashed line (dashed polyline between bodies)
-    - Purpose: keep geometry allocation and BufferAttribute wiring in one place so the mission/math code can update positions quickly each frame.
+  - Purpose: keep geometry allocation and BufferAttribute wiring in one place so the mission/math code can update positions quickly each frame.
+  - `js/main.js` consumes these factories, creates the lines, and updates vertices when `missions:refresh` is emitted.
   - bodies.js, lights.js, renderer.js
     - Scene object creation and helpers.
 
@@ -36,8 +38,8 @@ JS structure
     - Emits `missions:refresh` when geometries should be updated and `panel:status` messages for the UI.
     - Exposes `initMissions()` for event wiring and `launchMission()` for bootstrap compatibility.
   - cameraModes.js
-    - Provides `initCameraModes({camera, controls, getTarget})`, `setMode('orbit'|'topdown')`, and `updateCamera(dt)`.
-    - Encapsulates topdown offset, lerp speeds, and polar clamp when acting in topdown mode.
+    - Provides `setupCameraModes(camera, controls, getTarget?)` which initializes module state and returns `{ focusEarth, focusInnerSystem }`.
+    - Also provides `initCameraModes`, `setMode('orbit'|'topdown')`, and `updateCamera(dt)` for internal usage.
 
 - js/math/
   - constants.js

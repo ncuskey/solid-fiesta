@@ -1,4 +1,4 @@
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
+import * as THREE from 'three';
 import { ORBIT, TRANSFER, ENTRY_LEAD_DEG, PARKING_SENSE } from '../math/constants.js';
 
 // Helper to make a Line with a fixed vertex count
