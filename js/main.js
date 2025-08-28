@@ -6,6 +6,9 @@ import { initPanel } from './ui/panel.js';
 import { TIME } from './core/time.js';
 import { currentAngularRates } from './math/orbits.js';
 import { on, emit } from './core/events.js';
+import { setupCameraModes } from './systems/cameraModes.js';
+import { updateKinematics } from './systems/kinematics.js';
+import { launchMission } from './systems/missions.js';
 
 const container = document.getElementById('game-container');
 const { scene, camera, renderer, controls } = createRenderer(container);
@@ -16,14 +19,20 @@ const panel = initPanel();
 
 on('mission:launch', () => {
   panel.setStatus('Launching Earth → Mars…');
-  // TODO: call into systems/missions.js for pathing/visuals
+  // start a mission and emit lifecycle events
+  const m = launchMission('earth', 'mars');
+  emit('mission:started', m);
+  setTimeout(() => emit('mission:completed', m), m.duration);
 });
 
 function tick(dt) {
   const r = currentAngularRates(TIME.daysPerSecond, TIME.multiplier);
-  // simple demo motion (replace with systems/kinematics.js later)
-  if (bodies.earthGroup) bodies.earthGroup.rotation.y += r.earth * dt;  // around Sun
-  if (bodies.moon) bodies.moon.rotation.y += r.moon * dt;         // orbit Earth (placeholder)
+  // keep simple orbital rates but allow systems/kinematics to update scene state
+  if (bodies.earthGroup) bodies.earthGroup.rotation.y += r.earth * dt;
+  if (bodies.moon) bodies.moon.rotation.y += r.moon * dt;
+
+  // systems-level per-frame updates (currently placeholder)
+  try { updateKinematics(bodies, dt); } catch (e) { /* ignore for now */ }
 
   controls.update();
   renderer.render(scene, camera);
@@ -40,7 +49,24 @@ requestAnimationFrame(frame);
 // Placeholder bootstrap that will import modularized parts.
 
 export function boot() {
-  console.log('boot placeholder - wire modules from js/*');
+  // Wire camera modes
+  const cameraModes = setupCameraModes(camera, controls);
+
+  // Example: focus Earth on startup (no-op if not implemented)
+  cameraModes?.focusEarth?.();
+
+  // Wire mission status to panel
+  on('mission:started', (m) => panel.setStatus('Mission started'));
+  on('mission:completed', (m) => panel.setStatus('Mission complete'));
+
+  // Build a dynamic list of initialized modules
+  const initialized = [];
+  if (cameraModes) initialized.push('cameraModes');
+  // kinematics is a function we call from the frame loop; consider it present if imported
+  if (typeof updateKinematics === 'function') initialized.push('kinematics');
+  if (typeof launchMission === 'function') initialized.push('missions');
+
+  console.log(`booted modules: ${initialized.join(', ')}`);
 }
 
 // Auto-run (keeps current demo behavior until we refactor further)

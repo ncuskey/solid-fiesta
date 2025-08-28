@@ -1,11 +1,13 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js';
-import { TAU, ORBIT, TRANSFER, ENTRY_LEAD_DEG, PARKING_SENSE } from './math/constants.js';
+import { TAU, ORBIT, TRANSFER, ENTRY_LEAD_DEG, PARKING_SENSE, HOHMANN } from './math/constants.js';
 import { latLonToLocal } from './math/geo.js';
 import { currentAngularRates } from './math/orbits.js';
 import { TIME, setDaysPerSecond } from './core/time.js';
 import { on, emit } from './core/events.js';
 import { initPanel } from './ui/panel.js';
+import { createParkingArc, createAscentArc, createTransferLine } from './scene/overlays.js';
+import { initMissions } from './systems/missions.js';
 
 // --- Simulation constants & config (minimal defaults) ---
 // Simulation speed: how many simulated days pass per real second
@@ -22,6 +24,15 @@ let mission = null;
 
 // Initialize UI panel (wires speed controls and buttons)
 const panel = initPanel();
+
+// Initialize missions system which listens for mission:launch
+const missions = initMissions();
+
+// Route missions status messages to the panel
+on('panel:status', (t) => { panel.setStatus(t); });
+
+// When missions request a geometry refresh, call the parking/transfer updater
+on('missions:refresh', () => { updateParkingOrbitAndTransfer(); });
 
 // Return current angular rates (rad / real-second) for bodies used in the sim.
 // Uses simple fixed orbital periods (days) and the global TIME scale.
@@ -45,6 +56,8 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.07;
 controls.minDistance = 4;
 controls.maxDistance = 300;
+// initialize camera modes now that camera & controls exist
+initCameraModes({ camera, controls, getTarget: () => worldPosOf(earth) });
 // --- Sun + Lights (makes the colored materials actually visible) ---
 const sun = new THREE.Mesh(
   new THREE.SphereGeometry(6, 32, 32),
@@ -59,9 +72,9 @@ scene.add(ambient);
 // Bright point light at the Sun so Earth/Moon/Mars shade nicely
 const sunLight = new THREE.PointLight(0xffffff, 2.0, 0, 2); // (color, intensity, distance=∞, decay)
 sun.add(sunLight);
-// topdown follow helpers
-const TOPDOWN = { height: 40, polarMax: Math.PI * 0.2, targetLerp: 0.15, camLerp: 0.09 };
-const topdownOffsetXZ = new THREE.Vector3(12, 0, 0);
+import { initCameraModes, setMode as setCameraMode, updateCamera, TOPDOWN as CAMERA_TOPDOWN, setTopdownOffsetFromCamera } from './systems/cameraModes.js';
+
+// temporary holder for offset vector is inside cameraModes; provide a getter
 
 // Helper: return an object's world-space position as a Vector3
 function worldPosOf(obj) {
@@ -133,89 +146,31 @@ const mars = new THREE.Mesh(
 mars.position.set(50, 0, 0);
 marsPivot.add(mars);
 // ---------- Hohmann (Earth-site -> Moon-site) — anchored & planar to both sites ----------
-const HOHMANN = {
-  shipAlt: 0.00,  // start altitude above Earth surface (0 = surface)
-  segments: 128,
-  color: 0x66ccff,
-  dashSize: 0.6,
-  gapSize: 0.4,
-  moonRate: 2.2   // overwritten in animate()
-};
-
-let transferArc, transferGeom, arrivalMarker, waitLine, waitGeom;
-
-function ensureTransferPrimitives() {
-  if (!transferArc) {
-    transferGeom = new THREE.BufferGeometry();
-    transferGeom.setAttribute('position',
-      new THREE.BufferAttribute(new Float32Array((HOHMANN.segments + 1) * 3), 3)
-    );
-    const mat = new THREE.LineDashedMaterial({
-      color: HOHMANN.color, dashSize: HOHMANN.dashSize, gapSize: HOHMANN.gapSize,
-      transparent: true, opacity: 0.95
-    });
-    transferArc = new THREE.Line(transferGeom, mat);
-    transferArc.computeLineDistances();
-    scene.add(transferArc);
-
-    arrivalMarker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.25, 16, 16),
-      new THREE.MeshBasicMaterial({ color: HOHMANN.color })
-    );
-    scene.add(arrivalMarker);
-
-    // Optional: faint wait segment (now-site -> launch-time site)
-    waitGeom = new THREE.BufferGeometry();
-    waitGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(2 * 3), 3));
-    const waitMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 });
-    waitLine = new THREE.Line(waitGeom, waitMat);
-    scene.add(waitLine);
-  }
-}
+let transferArc, arrivalMarker, waitLine;
+// create overlay primitives via scene factory (single-time)
+transferArc = createTransferLine(scene, HOHMANN.segments);
+arrivalMarker = new THREE.Mesh(
+  new THREE.SphereGeometry(0.25, 16, 16),
+  new THREE.MeshBasicMaterial({ color: HOHMANN.color })
+);
+scene.add(arrivalMarker);
+waitLine = new THREE.Line(
+  new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(2 * 3), 3)),
+  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 })
+);
+scene.add(waitLine);
 
 // ===== Lines/geometry for ascent, parking-arc, transfer-arc =====
-let ascentLine, ascentGeom;
-let waitArcLine, waitArcGeom;
-let transferLine, transferGeom2, arrivalMarker2;
-
-function ensureTrajectoryPrimitives() {
-  if (!ascentLine) {
-    ascentGeom = new THREE.BufferGeometry();
-    ascentGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array((ORBIT.ascentSegments+1)*3), 3));
-    const mat = new THREE.LineBasicMaterial({ color: ORBIT.ascentColor, transparent:true, opacity:0.8 });
-    ascentLine = new THREE.Line(ascentGeom, mat);
-    scene.add(ascentLine);
-  }
-  if (!waitArcLine) {
-    waitArcGeom = new THREE.BufferGeometry();
-    waitArcGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array((ORBIT.segments+1)*3), 3));
-    const mat = new THREE.LineBasicMaterial({ color: ORBIT.orbitColor, transparent:true, opacity:0.45 });
-    waitArcLine = new THREE.Line(waitArcGeom, mat);
-    scene.add(waitArcLine);
-  }
-  if (!transferLine) {
-    transferGeom2 = new THREE.BufferGeometry();
-    transferGeom2.setAttribute('position', new THREE.BufferAttribute(new Float32Array((128+1)*3), 3));
-    const mat = new THREE.LineDashedMaterial({
-      color: TRANSFER.color, dashSize: TRANSFER.dashSize, gapSize: TRANSFER.gapSize,
-      transparent: true, opacity: 0.95
-    });
-    transferLine = new THREE.Line(transferGeom2, mat);
-    transferLine.computeLineDistances();
-    scene.add(transferLine);
-
-    arrivalMarker2 = new THREE.Mesh(
-      new THREE.SphereGeometry(0.25, 16, 16),
-      new THREE.MeshBasicMaterial({ color: TRANSFER.color })
-    );
-    scene.add(arrivalMarker2);
-  }
-}
+// create the ascent and parking arc lines using overlays factory
+const ascentLine = createAscentArc(scene, ORBIT.ascentSegments);
+const waitArcLine = createParkingArc(scene, ORBIT.segments);
+const transferLine = transferArc; // reuse transferArc created above
+const arrivalMarker2 = arrivalMarker; // alias
 
 // Parking orbit + transfer solver called every frame
 // === WORK-BACKWARDS: ascent (fixed), parking (variable), transfer (fixed endpoints) ===
 function updateParkingOrbitAndTransfer() {
-  ensureTrajectoryPrimitives();
+  // ensureTrajectoryPrimitives now handled by overlays factory at initialization
 
   // State "now"
   const earthW = worldPosOf(earth);
@@ -305,8 +260,8 @@ function updateParkingOrbitAndTransfer() {
     const a = 0.5*(r1 + r2);
     const e = (r2 - r1) / (r2 + r1);
 
-    const pos = transferGeom2.getAttribute('position');
-    const N = 128;
+  const pos = transferLine.geometry.getAttribute('position');
+  const N = HOHMANN.segments;
     for (let i=0;i<=N;i++){
       const nu = (i/N)*Math.PI; // 0..π
       const r  = (a*(1-e*e)) / (1 + e*Math.cos(nu));
@@ -318,9 +273,9 @@ function updateParkingOrbitAndTransfer() {
     const pBurn = earthW.clone().add(u.clone().multiplyScalar(r1));
     pos.setXYZ(0, pBurn.x, pBurn.y, pBurn.z);
     pos.setXYZ(N, pArrive.x, pArrive.y, pArrive.z);
-    pos.needsUpdate = true;
-    transferLine.computeLineDistances();
-    arrivalMarker2.position.copy(pArrive);
+  pos.needsUpdate = true;
+  transferLine.computeLineDistances && transferLine.computeLineDistances();
+  arrivalMarker2.position.copy(pArrive);
 
     // Stash u,v on the function scope so the parking-arc block can use them
     updateParkingOrbitAndTransfer._uv = uvForParking;
@@ -351,8 +306,8 @@ function updateParkingOrbitAndTransfer() {
   // --- 2) PARKING-ORBIT arc (variable length only) ---
   {
     // REQUIRE: entryDir, t_hat_entry, earthW, r1 defined above
-    const pos = waitArcGeom.getAttribute('position');
-    const N = ORBIT.segments;
+  const pos = waitArcLine.geometry.getAttribute('position');
+  const N = ORBIT.segments;
 
     // 1) Get burn direction in XZ (periapsis radial). Prefer transfer.u; else derive from Moon site.
     let burnDir;
@@ -379,15 +334,15 @@ function updateParkingOrbitAndTransfer() {
           const phi = (i / ORBIT.segments) * sweep;      // rotate about +Y
           const dir = rotY(entryDir.clone(), phi).normalize();
           const p   = earthW.clone().add(dir.multiplyScalar(r1));
-          waitArcGeom.attributes.position.setXYZ(i, p.x, p.y, p.z);
+          pos.setXYZ(i, p.x, p.y, p.z);
         }
-        waitArcGeom.attributes.position.needsUpdate = true;
+        pos.needsUpdate = true;
 
         // keep existing endpoint snaps (pEntry and pBurn)
         const pEntry = earthW.clone().add(entryDir.clone().multiplyScalar(r1));
         const pBurn  = earthW.clone().add(burnDir.clone().multiplyScalar(r1));
-        pos.setXYZ(0, pEntry.x, pEntry.y, pEntry.z);
-        pos.setXYZ(N, pBurn.x,  pBurn.y,  pBurn.z);
+  pos.setXYZ(0, pEntry.x, pEntry.y, pEntry.z);
+  pos.setXYZ(N, pBurn.x,  pBurn.y,  pBurn.z);
 
       // (optional) quick sanity log: should be ~ +1 if the arc starts prograde
       // const P0 = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0));
@@ -422,8 +377,8 @@ function updateParkingOrbitAndTransfer() {
     const pEntry = earthW.clone().add(u.clone().multiplyScalar(r1)); // end on parking circle
     const pStart = worldPosOf(earthSite);                              // launch site now
 
-    const pos = ascentGeom.getAttribute('position');
-    const N = ORBIT.ascentSegments;
+  const pos = ascentLine.geometry.getAttribute('position');
+  const N = ORBIT.ascentSegments;
 
     // Ellipse centered at Earth:  r(ν) = earthW + u*(a cosν) + v*(b sinν)
     // Constrain: at ν=0 -> pEntry  ⇒ a = r1.
@@ -456,14 +411,13 @@ function updateParkingOrbitAndTransfer() {
       // Smooth vertical blend (keeps the arc pretty without affecting plan view)
       const y   = THREE.MathUtils.lerp(pStart.y, pEntry.y, t * t * (3 - 2 * t));
 
-      pos.setXYZ(i, pXZ.x, y, pXZ.z);
+  pos.setXYZ(i, pXZ.x, y, pXZ.z);
     }
 
     // Snap endpoints exactly
-    pos.setXYZ(0, pStart.x, pStart.y, pStart.z);
-    pos.setXYZ(N, pEntry.x, pEntry.y, pEntry.z);
-
-    pos.needsUpdate = true;
+  pos.setXYZ(0, pStart.x, pStart.y, pStart.z);
+  pos.setXYZ(N, pEntry.x, pEntry.y, pEntry.z);
+  pos.needsUpdate = true;
   }
 
   // Telemetry (sim-days)
@@ -500,8 +454,8 @@ function updateParkingOrbitAndTransfer() {
         const mid = Math.floor((cnt-1)/2);
         dbg(name, { first: get(0), mid: get(mid), last: get(cnt-1), count: cnt });
       }
-      sampleAttr(waitArcGeom.getAttribute('position'), 'waitArc');
-      sampleAttr(ascentGeom.getAttribute('position'), 'ascent');
+  sampleAttr(waitArcLine.geometry.getAttribute('position'), 'waitArc');
+  sampleAttr(ascentLine.geometry.getAttribute('position'), 'ascent');
     } catch (e) {
       console.warn('[HohmannDBG] debug log failed', e);
     }
@@ -622,7 +576,7 @@ function updateHohmannArc_anchored() {
   const a = 0.5*(r1 + r2);
   const e = (r2 - r1) / (r2 + r1);
 
-  const pos = transferGeom.getAttribute('position');
+  const pos = transferArc.geometry.getAttribute('position');
   for (let i = 0; i <= HOHMANN.segments; i++) {
     const nu = (i / HOHMANN.segments) * Math.PI;        // true anomaly 0..π
     const r  = (a * (1 - e*e)) / (1 + e * Math.cos(nu));
@@ -648,10 +602,10 @@ function updateHohmannArc_anchored() {
   // wait line (now-site -> launch-time site)
   {
     const earthSiteNowW = worldPosOf(earthSite);
-    const wpos = waitGeom.getAttribute('position');
-    wpos.setXYZ(0, earthSiteNowW.x, earthSiteNowW.y, earthSiteNowW.z);
-    wpos.setXYZ(1, pLaunchW.x,      pLaunchW.y,      pLaunchW.z);
-    wpos.needsUpdate = true;
+  const wpos = waitLine.geometry.getAttribute('position');
+  wpos.setXYZ(0, earthSiteNowW.x, earthSiteNowW.y, earthSiteNowW.z);
+  wpos.setXYZ(1, pLaunchW.x,      pLaunchW.y,      pLaunchW.z);
+  wpos.needsUpdate = true;
   }
 
   return { tof, wait, total: wait + tof };
@@ -688,17 +642,16 @@ function focusEarth(instant=false) {
 
   // clamp polar to top-down and allow free azimuth
   controls.minPolarAngle = 0;
-  controls.maxPolarAngle = TOPDOWN.polarMax;
+  controls.maxPolarAngle = CAMERA_TOPDOWN.polarMax;
   controls.minAzimuthAngle = -Infinity;
   controls.maxAzimuthAngle = Infinity;
 
   const target = worldPosOf(earth);
-  // Compute the fixed horizontal offset (XZ) from current camera->target.
-  topdownOffsetXZ.copy(camera.position).sub(target);
-  topdownOffsetXZ.y = 0;
-  if (topdownOffsetXZ.lengthSq() < 1e-3) topdownOffsetXZ.set(12, 0, 0); // sensible default
+  // set initial topdown offset from current camera and activate mode
+  setCameraMode('topdown');
+  setTopdownOffsetFromCamera();
 
-  const destPos = target.clone().add(topdownOffsetXZ).add(new THREE.Vector3(0, TOPDOWN.height, 0));
+  const destPos = target.clone().add(new THREE.Vector3(12,0,0)).add(new THREE.Vector3(0, CAMERA_TOPDOWN.height, 0));
 
   if (instant) {
     controls.target.copy(target);
@@ -716,6 +669,7 @@ function focusEarth(instant=false) {
 
 function focusInnerSystem() {
   stage = STAGE.INNER_SYSTEM;
+  setCameraMode('orbit');
   // Wider zoom range
   controls.minDistance = 40;
   controls.maxDistance = 300;
@@ -801,38 +755,19 @@ function animate() {
     if (u >= 1) camTween = null;
   }
 
-  // While in Earth-Moon stage and not tweening, TOPDOWN follow of Earth
+  // Camera follow behavior handled by cameraModes.updateCamera when in topdown
   if (stage === STAGE.EARTH_MOON && !camTween) {
-    const target = worldPosOf(earth);
-    controls.target.lerp(target, TOPDOWN.targetLerp);
-    // desired camera position keeps the same XZ offset from Earth so the
-    // camera's facing direction in world-space is constant as Earth orbits.
-    const desiredPos = target.clone().add(topdownOffsetXZ).setY(TOPDOWN.height);
-    camera.position.lerp(desiredPos, TOPDOWN.camLerp);
+    updateCamera(dt);
   }
   // Ensure starfield is world-anchored so it rotates naturally as the system moves
   if (typeof starfield !== 'undefined') starfield.position.set(0,0,0);
   
-  // Mission update
-  if (mission) {
-    const elapsed = performance.now() - mission.start;
-    const u = Math.min(elapsed / mission.duration, 1);
-    const s = u * u * (3 - 2 * u);
-    ship.position.lerpVectors(mission.startPos, mission.endPos, s);
-
-    panel.setStatus(u < 1
-      ? `Mission in progress: ${(u * 100).toFixed(0)}%`
-      : 'Mission complete');
-
-    if (u >= 1) mission = null;
-  }
+    // mission visuals handled by systems/missions state machine; keep per-frame UI if needed
 
   // --- Live Parking→Transfer update ---
   const telem = updateParkingOrbitAndTransfer();
-  panel.setStatus(
-    `Parking→Transfer · Wait ${telem.waitDays.toFixed(2)} d  · ` +
-    `TOF ${telem.tofDays.toFixed(2)} d  · Total ${telem.totalDays.toFixed(2)} d`
-  );
+  // panel status may be overridden by missions; emit a general status event
+  emit('panel:status', `Parking→Transfer · Wait ${telem.waitDays.toFixed(2)} d  · TOF ${telem.tofDays.toFixed(2)} d`);
 
   controls.update();
   renderer.render(scene, camera);

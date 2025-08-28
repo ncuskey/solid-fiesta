@@ -10,6 +10,16 @@ export const PERIODS = {
 export const ORBIT = { rPark: 4.0, segments: 64, ascentSegments: 24, ascentColor: 0x44ff88, orbitColor: 0xffffff };
 export const TRANSFER = { color: 0x66ccff, dashSize: 0.6, gapSize: 0.4 };
 
+// Hohmann/mission visual defaults (kept here so all tweakables live in constants)
+export const HOHMANN = {
+  shipAlt: 0.00,  // start altitude above Earth surface (0 = surface)
+  segments: 128,
+  color: 0x66ccff,
+  dashSize: 0.6,
+  gapSize: 0.4,
+  moonRate: 2.2 // runtime-updated value
+};
+
 // gameplay/config toggles
 export const ENTRY_LEAD_DEG = 30;  // fixed east/prograde
 export const PARKING_SENSE = -1;   // CCW=+1, CW=-1 (your current default)
