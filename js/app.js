@@ -1,39 +1,18 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js';
+import { TAU, ORBIT, TRANSFER, ENTRY_LEAD_DEG, PARKING_SENSE } from './math/constants.js';
+import { latLonToLocal } from './math/geo.js';
+import { currentAngularRates } from './math/orbits.js';
 
 // --- Simulation constants & config (minimal defaults) ---
-const TAU = Math.PI * 2;
 // Simulation speed: how many simulated days pass per real second
 // Set to 0.1 for a slower simulation pace
 const TIME = { daysPerSecond: 0.1, multiplier: 1.0 };
 // Earth's sidereal day in days
 const SIDEREAL_DAY = 0.99726968;
 
-// Orbit/visual defaults used by the parking/transfer visuals
-const ORBIT = {
-  rPark: 4.0,            // two Earth radii parking orbit (scene units)
-  segments: 64,
-  ascentSegments: 24,
-  ascentColor: 0x44ff88,
-  orbitColor: 0xffffff
-};
-
-const TRANSFER = {
-  color: 0x66ccff,
-  dashSize: 0.6,
-  gapSize: 0.4
-};
-
-// Launch insertion downrange lead: positive means downrange/prograde
-const LEAD_DOWNRANGE_DEG = 30; // positive means "downrange/prograde"
-const LEAD_DOWNRANGE = THREE.MathUtils.degToRad(LEAD_DOWNRANGE_DEG);
-
-// Fixed entry lead (east/prograde)
-const ENTRY_LEAD_DEG = 30; // + = east/prograde (CCW about +Y)
+// Convert imported ENTRY_LEAD_DEG -> radians for runtime use
 const ENTRY_LEAD = THREE.MathUtils.degToRad(ENTRY_LEAD_DEG);
-
-// +1 = CCW (prograde), -1 = CW (reverse)
-const PARKING_SENSE = -1;
 
 // UI/status and mission placeholders
 const statusEl = document.getElementById('status');
@@ -41,19 +20,7 @@ let mission = null;
 
 // Return current angular rates (rad / real-second) for bodies used in the sim.
 // Uses simple fixed orbital periods (days) and the global TIME scale.
-function currentAngularRates() {
-  // Periods (days) - simple approximations for the demo
-  const moonPeriodDays = 27.321661; // sidereal month
-  const earthYearDays  = 365.256;   // sidereal year
-  const marsYearDays   = 686.98;    // sidereal Mars year approx
-
-  const scale = TIME.daysPerSecond * (TIME.multiplier ?? 1);
-  return {
-    moon: (TAU / moonPeriodDays) * scale,
-    earth: (TAU / earthYearDays) * scale,
-    mars: (TAU / marsYearDays) * scale
-  };
-}
+// currentAngularRates provided by js/math/orbits.js
 
 // ---------- Scene / Camera / Renderer ----------
 const scene = new THREE.Scene();
@@ -100,15 +67,7 @@ function worldPosOf(obj) {
 }
 
 // Helper: convert lat/lon (degrees) + radius -> local Cartesian (Y up)
-function latLonToLocal(latDeg, lonDeg, r) {
-  const lat = THREE.MathUtils.degToRad(latDeg);
-  const lon = THREE.MathUtils.degToRad(lonDeg);
-  // latitude: 0 = equator, +90 = north pole. Convert to spherical coordinates
-  const x = r * Math.cos(lat) * Math.cos(lon);
-  const z = r * Math.cos(lat) * Math.sin(lon);
-  const y = r * Math.sin(lat);
-  return new THREE.Vector3(x, y, z);
-}
+// latLonToLocal provided by js/math/geo.js
 
 // Default pinned sites (lat, lon, radius in scene units)
 const EARTH_SITE = { latDeg: 28.5, lonDeg: -80.6, radius: 2.0 }; // Cape Canaveral approx
