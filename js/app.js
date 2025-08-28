@@ -3,6 +3,9 @@ import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/exampl
 import { TAU, ORBIT, TRANSFER, ENTRY_LEAD_DEG, PARKING_SENSE } from './math/constants.js';
 import { latLonToLocal } from './math/geo.js';
 import { currentAngularRates } from './math/orbits.js';
+import { TIME, setDaysPerSecond } from './core/time.js';
+import { on, emit } from './core/events.js';
+import { initPanel } from './ui/panel.js';
 
 // --- Simulation constants & config (minimal defaults) ---
 // Simulation speed: how many simulated days pass per real second
@@ -15,8 +18,10 @@ const SIDEREAL_DAY = 0.99726968;
 const ENTRY_LEAD = THREE.MathUtils.degToRad(ENTRY_LEAD_DEG);
 
 // UI/status and mission placeholders
-const statusEl = document.getElementById('status');
 let mission = null;
+
+// Initialize UI panel (wires speed controls and buttons)
+const panel = initPanel();
 
 // Return current angular rates (rad / real-second) for bodies used in the sim.
 // Uses simple fixed orbital periods (days) and the global TIME scale.
@@ -73,27 +78,7 @@ function worldPosOf(obj) {
 const EARTH_SITE = { latDeg: 28.5, lonDeg: -80.6, radius: 2.0 }; // Cape Canaveral approx
 const MOON_SITE  = { latDeg: 0.67,  lonDeg: 23.47,  radius: 0.5 }; // Tranquility Base-ish
 
-// ---------- UI elements (DOM) ----------
-const launchBtn = document.getElementById('launch-btn');
-const upgradeBtn = document.getElementById('upgrade-btn');
-const speedMinusBtn = document.getElementById('speed-minus');
-const speedPlusBtn  = document.getElementById('speed-plus');
-const speedValueEl  = document.getElementById('speed-value');
-
-// Helper to set simulation speed (daysPerSecond) with clamping and UI update
-function setSimSpeed(v) {
-  // clamp between 0.0 and 5.0 days/sec for sanity
-  const clamped = Math.max(0.0, Math.min(5.0, Math.round(v * 10) / 10));
-  TIME.daysPerSecond = clamped;
-  if (speedValueEl) speedValueEl.textContent = clamped.toFixed(1);
-}
-
-// Wire buttons (change by 0.1 increments)
-speedMinusBtn?.addEventListener('click', () => setSimSpeed((TIME.daysPerSecond || 0) - 0.1));
-speedPlusBtn?.addEventListener('click',  () => setSimSpeed((TIME.daysPerSecond || 0) + 0.1));
-
-// Initialize display
-setSimSpeed(TIME.daysPerSecond);
+// UI is handled by `initPanel()`; direct DOM wiring removed in favor of event-driven panel
 
 // Minimal solar system pivots and Earth mesh (created early so later code can reference them)
 const solarPivot = new THREE.Object3D();
@@ -234,7 +219,7 @@ function updateParkingOrbitAndTransfer() {
 
   // State "now"
   const earthW = worldPosOf(earth);
-  const w      = currentAngularRates();
+  const w      = currentAngularRates(TIME.daysPerSecond, TIME.multiplier);
   const n_spinE = (TAU / SIDEREAL_DAY) * (TIME.daysPerSecond * TIME.multiplier);
   const n_moon  = w.moon;
 
@@ -576,7 +561,7 @@ function updateHohmannArc_anchored() {
   const moonSiteLocal  = latLonToLocal(MOON_SITE.latDeg,  MOON_SITE.lonDeg,  MOON_SITE.radius);
 
   // Rates (rad / real-second)
-  const w = currentAngularRates();
+  const w = currentAngularRates(TIME.daysPerSecond, TIME.multiplier);
   const n_moon  = HOHMANN.moonRate;               // orbit of Moon about Earth
   const n_spinE = (TAU / SIDEREAL_DAY) * (TIME.daysPerSecond * TIME.multiplier); // Earth spin
 
@@ -767,8 +752,8 @@ function focusInnerSystem() {
 }
 
 // button to simulate upgrade unlock
-upgradeBtn?.addEventListener('click', () => {
-  statusEl.textContent = 'Upgrade acquired: Interplanetary Navigation';
+on('upgrade:interplanetaryNav', (p) => {
+  panel.setStatus('Upgrade acquired: Interplanetary Navigation');
   focusInnerSystem();
 });
 
@@ -792,7 +777,7 @@ function animate() {
 
   const dt = clock.getDelta();
   // derive current angular rates (rad / real-second) from orbital periods + time scale
-  const w = currentAngularRates();
+  const w = currentAngularRates(TIME.daysPerSecond, TIME.multiplier);
   eAngle    += w.earth * dt;
   mAngle    += w.mars  * dt;
   moonAngle += w.moon  * dt;
@@ -805,7 +790,7 @@ function animate() {
   earth.rotation.y += wEarthSpin * dt;
 
   // keep Hohmann viz in sync with current sim rate
-  HOHMANN.moonRate = currentAngularRates().moon;
+  HOHMANN.moonRate = currentAngularRates(TIME.daysPerSecond, TIME.multiplier).moon;
 
   // Camera tween update
   if (camTween) {
@@ -835,20 +820,19 @@ function animate() {
     const s = u * u * (3 - 2 * u);
     ship.position.lerpVectors(mission.startPos, mission.endPos, s);
 
-    statusEl.textContent = u < 1
+    panel.setStatus(u < 1
       ? `Mission in progress: ${(u * 100).toFixed(0)}%`
-      : 'Mission complete';
+      : 'Mission complete');
 
     if (u >= 1) mission = null;
   }
 
   // --- Live Parking→Transfer update ---
   const telem = updateParkingOrbitAndTransfer();
-  if (statusEl) {
-    statusEl.textContent =
-      `Parking→Transfer · Wait ${telem.waitDays.toFixed(2)} d  · ` +
-      `TOF ${telem.tofDays.toFixed(2)} d  · Total ${telem.totalDays.toFixed(2)} d`;
-  }
+  panel.setStatus(
+    `Parking→Transfer · Wait ${telem.waitDays.toFixed(2)} d  · ` +
+    `TOF ${telem.tofDays.toFixed(2)} d  · Total ${telem.totalDays.toFixed(2)} d`
+  );
 
   controls.update();
   renderer.render(scene, camera);
