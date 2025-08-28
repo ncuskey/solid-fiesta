@@ -2,11 +2,16 @@
 
 ## Project Overview
 - This is a minimal Three.js browser demo visualizing the Sun, Earth (with Moon), and Mars in simple circular orbits.
-- The main UI is in `index.html`, with styles in `css/style.css` and all app logic in `js/app.js`.
+- The main UI is in `index.html`, with styles in `css/style.css` and application logic split across small ES modules in `js/`:
+  - `js/app.js` — scene setup, main animation loop, and high-level wiring.
+  - `js/scene/overlays.js` — factory functions for visual orbit overlays (parking, ascent, transfer).
+  - `js/systems/missions.js` — mission state machine and lifecycle.
+  - `js/systems/cameraModes.js` — camera follow/topdown helpers.
+  - `js/math/constants.js` — centralized tweakable constants.
 - The app is designed for direct browser use via a local static server (e.g., `python3 -m http.server 8080`).
 
 ## Architecture & Patterns
-- All rendering and animation logic is in a single ES module: `js/app.js`.
+- Rendering and animation are initialized in `js/app.js`, but logic is split into modules (listed above). `js/app.js` imports and wires those systems together; most per-frame updates still run from the main animate loop.
 - Uses Three.js as an ES module from CDN (jsDelivr), with OrbitControls imported from the Three.js examples module.
 - Scene graph: Sun at origin, Earth and Mars as pivot children, Moon as a child of Earth. Orbits are visualized with rings.
 - Camera behavior is stage-aware:
